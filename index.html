@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>NBA Prop Command Center</title>
+<link rel="stylesheet" href="style.css">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon-192.png">
+<!-- 180x180 is iOS's own preferred Home Screen icon size — the browser-icon link
+     above still covers every other size via the manifest; this is purely so the
+     icon on an iPhone's Home Screen is pixel-crisp rather than iOS scaling the
+     192px one down itself. -->
+<link rel="apple-touch-icon" sizes="180x180" href="icon-180.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Prop Center">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#17191D">
+</head>
+<body>
+<header>
+  <h1>NBA Prop Command Center</h1>
+  <p>Live scores, player props, team markets, and parlays — all in one personal dashboard.</p>
+</header>
+<div class="wrap">
+  <div class="notice" id="notice"><b>About the data:</b> Live scores and stats come from ESPN's public (but unofficial, undocumented) NBA feed — no account, no API key, no sportsbook login. This page only displays information you enter; it never logs into a sportsbook, never retrieves live betting odds automatically, and never places a bet.</div>
+  <div class="notice info offline-banner hide" id="offlineBanner"><b>You're offline.</b> Your saved bets, parlays, and ladders are all still here and fully editable — nothing is lost. Live scores and stats can't update until your connection comes back; anything shown is the last data this device saved before going offline. This is per-device offline access, not a sync between your devices.</div>
+
+  <div class="topbar">
+    <div class="status"><span class="dot" id="dot"></span><span id="lastUpdate">Starting live feed…</span><span id="refreshIntervalLabel">· refreshes every 15 sec</span></div>
+    <div class="status save-status" id="saveStatusWrap" title="This app saves to your browser's local storage only — see Settings for details."><span class="dot" id="saveDot"></span><span id="saveStatus">—</span></div>
+    <div class="actions">
+      <button id="refreshBtn" class="primary">↻ Refresh now</button>
+      <button id="exportBtn" class="secondary">⬇ Export backup</button>
+      <button id="importBtn" class="secondary">⬆ Import backup</button>
+      <input type="file" id="importFile" accept="application/json" class="hide">
+    </div>
+  </div>
+
+  <nav class="tabs" id="tabs">
+    <button class="tab-btn active" data-tab="overview">Overview</button>
+    <button class="tab-btn" data-tab="straight">Straight Bets</button>
+    <button class="tab-btn" data-tab="parlays">Parlays</button>
+    <button class="tab-btn" data-tab="props">Player Props</button>
+    <button class="tab-btn" data-tab="team">Team Markets</button>
+    <button class="tab-btn" data-tab="ladders">Ladder Challenges</button>
+    <button class="tab-btn" data-tab="history">Bet History</button>
+    <button class="tab-btn" data-tab="import">Import Screenshots</button>
+    <button class="tab-btn" data-tab="settings">Settings</button>
+  </nav>
+
+  <!-- OVERVIEW -->
+  <section class="tabpanel active" id="tab-overview">
+    <div class="statstrip statstrip-7">
+      <div class="statbox"><small>Active tickets</small><strong id="ov-active-tickets">0</strong></div>
+      <div class="statbox"><small>Active selections</small><strong id="ov-active-legs">0</strong></div>
+      <div class="statbox"><small>Currently hitting</small><strong id="ov-hitting">0</strong></div>
+      <div class="statbox"><small>Settled wins</small><strong id="ov-wins">0</strong></div>
+      <div class="statbox"><small>Settled losses</small><strong id="ov-losses">0</strong></div>
+      <div class="statbox"><small>Needs review</small><strong id="ov-review">0</strong></div>
+      <div class="statbox"><small>Open ladders</small><strong id="ov-ladders">0</strong></div>
+    </div>
+
+    <div class="row" style="margin-bottom:14px">
+      <input id="ov-search" placeholder="Search player, team, opponent, or ticket name…" style="flex:1;min-width:220px">
+      <select id="ov-sort">
+        <option value="urgency">Sort: closest to target</option>
+        <option value="live">Sort: live games first</option>
+        <option value="start">Sort: start time</option>
+        <option value="status">Sort: status</option>
+        <option value="ticket">Sort: ticket name</option>
+      </select>
+    </div>
+    <div class="tag-select" id="ov-filters">
+      <button type="button" class="active" data-ovfilter="all">All</button>
+      <button type="button" data-ovfilter="live">Live</button>
+      <button type="button" data-ovfilter="pregame">Pre-game</button>
+      <button type="button" data-ovfilter="hitting">Hitting</button>
+      <button type="button" data-ovfilter="missing">Missing</button>
+      <button type="button" data-ovfilter="settled">Settled</button>
+      <button type="button" data-ovfilter="review">Needs review</button>
+    </div>
+    <div class="tag-select" id="ov-type-filters">
+      <button type="button" class="active" data-ovtype="all">All types</button>
+      <button type="button" data-ovtype="straightProp">Straight props</button>
+      <button type="button" data-ovtype="straightTeam">Straight team</button>
+      <button type="button" data-ovtype="parlay">Parlays</button>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><h2>Live &amp; active</h2></div>
+      <div class="panel-body" id="ov-live-section"><div class="empty">Nothing live or active right now.</div></div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h2>Upcoming</h2></div>
+      <div class="panel-body" id="ov-upcoming-section"><div class="empty">Nothing upcoming.</div></div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h2>Needs review</h2></div>
+      <div class="panel-body" id="ov-review-section"><div class="empty">Nothing needs review right now.</div></div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h2>Recently settled <small class="subtle">(kept here for 30 minutes after final, then moves to Bet History)</small></h2></div>
+      <div class="panel-body" id="ov-settled-section"><div class="empty">Nothing settled yet.</div></div>
+    </div>
+
+    <!-- GAME CENTER — intentionally placed BELOW the betting sections. Click a game
+         card to expand its full box score inline (no navigation, so your scroll
+         position in Overview never changes). -->
+    <div class="panel">
+      <div class="panel-head"><h2>Game Center</h2><span class="subtle" id="ov-live-count">—</span></div>
+      <div class="panel-body" id="ov-games"><div class="empty">Loading today's games…</div></div>
+    </div>
+  </section>
+
+  <!-- LADDER CHALLENGES -->
+  <section class="tabpanel" id="tab-ladders">
+    <div class="grid">
+      <section class="panel">
+        <div class="panel-head"><h2>Create a ladder challenge</h2></div>
+        <div class="panel-body">
+          <div class="formgrid">
+            <div class="field full"><label>Ladder name</label><input id="ld-name" placeholder="e.g. $50 to $500"></div>
+            <div class="field"><label>Starting amount ($)</label><input id="ld-start" type="number" step="0.01" placeholder="50"></div>
+            <div class="field"><label>Goal amount ($)</label><input id="ld-goal" type="number" step="0.01" placeholder="500"></div>
+            <div class="field"><label>Progression mode</label><select id="ld-mode">
+              <option value="reinvest">Reinvest full settled return each step</option>
+              <option value="stakeOnly">Reinvest only the original stake</option>
+              <option value="manual">Manual — I pick the stake every step</option>
+            </select></div>
+            <div class="field"><label>If a step loses…</label><select id="ld-allornothing">
+              <option value="true">End the challenge (mark LOST) — classic ladder</option>
+              <option value="false">Keep it open — track balance, don't auto-end</option>
+            </select></div>
+            <div class="field"><label>Target date (optional)</label><input id="ld-targetdate" type="date"></div>
+            <div class="field full"><label>Notes (optional)</label><input id="ld-notes" placeholder="optional"></div>
+          </div>
+          <p class="hint">The reinvestment policy you pick here is always shown on the ladder, never inferred later — you'll still confirm (or edit) the actual stake every time you add a step.</p>
+          <p class="err" id="ladderErr"></p>
+          <div class="btnrow"><button type="button" id="createLadderBtn" class="primary">＋ Create ladder</button></div>
+        </div>
+      </section>
+      <section class="panel">
+        <div class="panel-head"><h2>Your ladders</h2><span class="subtle" id="ladderCount">0</span></div>
+        <div class="panel-body" id="ladderList"><div class="empty">No ladders yet. Create one, or use "Add to Ladder" on a straight bet or parlay.</div></div>
+      </section>
+    </div>
+  </section>
+
+  <!-- BET HISTORY -->
+  <section class="tabpanel" id="tab-history">
+    <p class="hint" style="margin-top:0">The complete, permanent record of every straight bet and parlay ticket you've ever created — including ones still open. Archiving (30 minutes after a ticket's games are all final) only moves it out of Overview's active list; it is never deleted and stays linked to its ladder here.</p>
+    <div class="row" style="margin-bottom:10px">
+      <input id="hist-search" placeholder="Search player, team, or ticket name…" style="flex:1;min-width:220px">
+    </div>
+    <div class="tag-select" id="hist-filters">
+      <button type="button" class="active" data-histfilter="all">All</button>
+      <button type="button" data-histfilter="open">Open</button>
+      <button type="button" data-histfilter="won">Won</button>
+      <button type="button" data-histfilter="lost">Lost</button>
+      <button type="button" data-histfilter="pushvoid">Push / Void</button>
+      <button type="button" data-histfilter="review">Needs review</button>
+    </div>
+    <div class="btnrow" style="margin:0 0 10px"><button type="button" id="histExportBtn" class="secondary">⬇ Export History (CSV)</button></div>
+    <div class="btnrow hist-toolbar" id="histToolbar" style="margin:0 0 6px"></div>
+    <p class="data-freshness" id="histStatusMsg"></p>
+    <section class="panel">
+      <div class="panel-head"><h2>Tickets</h2><span class="subtle" id="histCount">0</span></div>
+      <div class="panel-body" id="historyList"><div class="empty">No tickets yet.</div></div>
+    </section>
+  </section>
+
+  <!-- STRAIGHT BETS -->
+  <section class="tabpanel" id="tab-straight">
+    <div class="grid">
+      <section class="panel">
+        <div class="panel-head"><h2>Add a straight bet</h2></div>
+        <div class="panel-body">
+          <div class="tag-select">
+            <button type="button" class="active" data-bettype="prop">Player Prop</button>
+            <button type="button" data-bettype="team">Team Market</button>
+          </div>
+          <p class="data-freshness" id="rosterStatus"></p>
+          <form id="straightForm">
+            <div id="propFields">
+              <div class="formgrid">
+                <div class="field full"><label>Player name</label><input id="s-player" autocomplete="off" placeholder="Start typing…"></div>
+                <div class="field"><label>Team</label><input id="s-team" maxlength="3" placeholder="auto-fills"></div>
+                <div class="field"><label>Opponent</label><input id="s-opponent" maxlength="3" placeholder="optional"></div>
+                <div class="field"><label>Stat / combo</label><select id="s-market">
+                  <option value="PRA">PRA</option><option value="PR">Points + Rebounds</option>
+                  <option value="PA">Points + Assists</option><option value="PTS">Points</option>
+                  <option value="REB">Rebounds</option><option value="AST">Assists</option>
+                  <option value="3PM">3-pointers made</option><option value="STL">Steals</option>
+                  <option value="BLK">Blocks</option><option value="TO">Turnovers</option>
+                </select></div>
+                <div class="field"><label>Target (your line)</label><input id="s-target" type="number" step="0.5" min="0.5" placeholder="21"></div>
+                <div class="field"><label>Direction</label><select id="s-direction"><option value="over">Over</option><option value="under">Under</option></select></div>
+              </div>
+              <p class="line-help" id="s-line-help"></p>
+            </div>
+            <div id="teamFields" class="hide">
+              <div class="formgrid">
+                <div class="field"><label>Market type</label><select id="t-markettype">
+                  <option value="moneyline">Moneyline</option>
+                  <option value="spread">Spread</option>
+                  <option value="teamTotal">Team total</option>
+                  <option value="gameTotal">Game total</option>
+                </select></div>
+                <div class="field" id="t-team-field"><label>Team</label><input id="t-team" autocomplete="off" placeholder="Start typing…"></div>
+                <div class="field" id="t-opp-field"><label>Opponent</label><input id="t-opponent" maxlength="3" placeholder="optional"></div>
+                <div class="field" id="t-line-field"><label>Line</label><input id="t-line" type="number" step="0.5" placeholder="e.g. -5.5 or 221.5"></div>
+                <div class="field" id="t-direction-field"><label>Direction</label><select id="t-direction"><option value="over">Over</option><option value="under">Under</option></select></div>
+              </div>
+              <p class="line-help" id="t-line-help"></p>
+            </div>
+            <div class="formgrid" style="margin-top:10px">
+              <div class="field"><label>Odds (American, optional)</label><input id="s-odds" placeholder="e.g. -115"></div>
+              <div class="field"><label>Bookmaker (optional)</label><input id="s-book" placeholder="e.g. Fanatics"></div>
+              <div class="field"><label>Stake (optional)</label><input id="s-stake" type="number" step="0.01" placeholder="20.00"></div>
+              <div class="field"><label>Matchup label (optional)</label><input id="s-game" placeholder="e.g. DAL @ HOU"></div>
+            </div>
+            <p class="err" id="straightErr"></p>
+            <div class="btnrow"><button class="primary" type="submit">＋ Add bet</button><button type="reset">Reset</button></div>
+          </form>
+        </div>
+      </section>
+      <section class="panel">
+        <div class="panel-head"><h2>All straight bets</h2><span class="subtle" id="straightCount">0</span></div>
+        <div class="panel-body" id="straightTableWrap"><div class="empty">No straight bets yet.</div></div>
+      </section>
+    </div>
+  </section>
+
+  <!-- PARLAYS -->
+  <section class="tabpanel" id="tab-parlays">
+    <div class="grid">
+      <section class="panel">
+        <div class="panel-head"><h2>Build a parlay</h2></div>
+        <div class="panel-body">
+          <div class="field full" style="margin-bottom:10px"><label>Parlay name</label><input id="p-name" placeholder="e.g. Friday 3-leg"></div>
+          <div class="field full" style="margin-bottom:10px"><label>Combined odds (American — as shown by your book)</label><input id="p-combined-odds" placeholder="e.g. +612"></div>
+          <div class="formgrid" style="margin-bottom:10px">
+            <div class="field"><label>Stake (optional)</label><input id="p-stake" type="number" step="0.01" placeholder="20.00"></div>
+            <div class="field"><label>Potential payout (optional)</label><input id="p-payout" type="number" step="0.01" placeholder="142.40"></div>
+          </div>
+          <p class="hint">Build legs below, then click "Create parlay". Combined odds for correlated same-game legs are never calculated for you — enter what your sportsbook actually shows.</p>
+          <hr style="border-color:var(--line);margin:14px 0">
+          <h3 style="margin:0 0 8px;font-size:14px">Add a leg</h3>
+          <div class="tag-select">
+            <button type="button" class="active" data-legtype="prop">Player Prop</button>
+            <button type="button" data-legtype="team">Team Market</button>
+          </div>
+          <div id="legPropFields">
+            <div class="formgrid">
+              <div class="field full"><label>Player name</label><input id="l-player" autocomplete="off"></div>
+              <div class="field"><label>Team</label><input id="l-team" maxlength="3"></div>
+              <div class="field"><label>Opponent</label><input id="l-opponent" maxlength="3"></div>
+              <div class="field"><label>Stat</label><select id="l-market">
+                <option value="PRA">PRA</option><option value="PR">PTS+REB</option><option value="PA">PTS+AST</option>
+                <option value="PTS">Points</option><option value="REB">Rebounds</option><option value="AST">Assists</option>
+                <option value="3PM">3PM</option><option value="STL">Steals</option><option value="BLK">Blocks</option><option value="TO">Turnovers</option>
+              </select></div>
+              <div class="field"><label>Target</label><input id="l-target" type="number" step="0.5"></div>
+              <div class="field"><label>Direction</label><select id="l-direction"><option value="over">Over</option><option value="under">Under</option></select></div>
+            </div>
+            <p class="line-help" id="l-line-help"></p>
+          </div>
+          <div id="legTeamFields" class="hide">
+            <div class="formgrid">
+              <div class="field"><label>Market</label><select id="lt-markettype">
+                <option value="moneyline">Moneyline</option><option value="spread">Spread</option>
+                <option value="teamTotal">Team total</option><option value="gameTotal">Game total</option>
+              </select></div>
+              <div class="field"><label>Team</label><input id="lt-team" autocomplete="off"></div>
+              <div class="field"><label>Opponent</label><input id="lt-opponent" maxlength="3"></div>
+              <div class="field"><label>Line</label><input id="lt-line" type="number" step="0.5"></div>
+              <div class="field"><label>Direction</label><select id="lt-direction"><option value="over">Over</option><option value="under">Under</option></select></div>
+            </div>
+            <p class="line-help" id="lt-line-help"></p>
+          </div>
+          <div class="field full" style="margin-top:8px"><label>Leg odds (optional)</label><input id="leg-odds" placeholder="e.g. -115"></div>
+          <div class="btnrow"><button type="button" id="addLegBtn" class="secondary">＋ Add leg to ticket</button></div>
+          <div class="leg-list" id="pendingLegs"></div>
+          <p class="err" id="parlayErr"></p>
+          <div class="btnrow"><button type="button" id="createParlayBtn" class="primary">Create parlay</button></div>
+        </div>
+      </section>
+      <section class="panel">
+        <div class="panel-head"><h2>Your parlays</h2><span class="subtle" id="parlayCount">0</span></div>
+        <div class="panel-body" id="parlayList"><div class="empty">No parlays yet.</div></div>
+      </section>
+    </div>
+  </section>
+
+  <!-- PLAYER PROPS -->
+  <section class="tabpanel" id="tab-props">
+    <p class="hint" style="margin-top:0">Live cards for your straight player-prop bets. Props inside a parlay show on their ticket under the Parlays tab.</p>
+    <div class="statstrip">
+      <div class="statbox"><small>Props tracked</small><strong id="pp-total">0</strong></div>
+      <div class="statbox"><small>Live games</small><strong id="pp-live">—</strong></div>
+      <div class="statbox"><small>Targets hit</small><strong id="pp-hit">0</strong></div>
+      <div class="statbox"><small>Still needs more</small><strong id="pp-need">0</strong></div>
+    </div>
+    <section class="panel">
+      <div class="panel-head"><h2>Live board</h2><select id="pp-filter"><option value="all">All props</option><option value="live">Live games</option><option value="hit">Targets hit</option><option value="pending">Upcoming / not matched</option></select></div>
+      <div class="panel-body" id="pp-board"><div class="empty">No player props yet. Add one from the Straight Bets tab.</div></div>
+    </section>
+  </section>
+
+  <!-- TEAM MARKETS -->
+  <section class="tabpanel" id="tab-team">
+    <p class="hint" style="margin-top:0">Live cards for your straight team-market bets (spreads, moneylines, totals). Legs inside a parlay show on their ticket under the Parlays tab.</p>
+    <div class="statstrip">
+      <div class="statbox"><small>Bets tracked</small><strong id="tm-total">0</strong></div>
+      <div class="statbox"><small>Live games</small><strong id="tm-live">—</strong></div>
+      <div class="statbox"><small>Currently hit</small><strong id="tm-hit">0</strong></div>
+      <div class="statbox"><small>Still live</small><strong id="tm-need">0</strong></div>
+    </div>
+    <section class="panel">
+      <div class="panel-head"><h2>Live board</h2></div>
+      <div class="panel-body" id="tm-board"><div class="empty">No team-market bets yet. Add one from the Straight Bets tab.</div></div>
+    </section>
+  </section>
+
+  <!-- IMPORT SCREENSHOTS -->
+  <section class="tabpanel" id="tab-import">
+    <div class="notice info"><b>How this works:</b> This reads text out of your screenshot using OCR running entirely in your browser (nothing is uploaded anywhere). It does its best to guess the player/team, market, line, and odds, but bet-slip screenshots vary a lot — anything it can't read confidently is left blank for you to fill in. You always get a review screen before anything is saved; nothing is added automatically. The OCR library (~2–10&nbsp;MB) downloads from a CDN the first time you use this tab, so it needs an internet connection once.</div>
+    <section class="panel">
+      <div class="panel-head"><h2>Upload a bet-slip screenshot</h2></div>
+      <div class="panel-body">
+        <div class="upload-zone" id="uploadZone">
+          <div id="uploadZoneText">Click to choose an image, or drag one here</div>
+          <input type="file" id="shotInput" accept="image/*" multiple class="hide">
+        </div>
+        <div id="ocrProgress" class="hint"></div>
+      </div>
+    </section>
+    <section class="panel hide" id="reviewPanel">
+      <div class="panel-head"><h2>Review before saving</h2></div>
+      <div class="panel-body">
+        <div id="reviewBody"></div>
+        <div class="btnrow"><button class="primary" id="saveReviewBtn">Save reviewed bet(s)</button><button class="secondary" id="discardReviewBtn">Discard</button></div>
+      </div>
+    </section>
+  </section>
+
+  <!-- SETTINGS -->
+  <section class="tabpanel" id="tab-settings">
+    <section class="panel">
+      <div class="panel-head"><h2>Data management &amp; backups</h2></div>
+      <div class="panel-body">
+        <p class="hint" style="margin-top:0">Your export is the only way to move data between devices or recover it if this browser's storage is ever lost. It's plain JSON — no credentials or secrets are included.</p>
+        <div class="btnrow" style="margin-top:4px">
+          <button class="primary" id="settingsExportBtn">⬇ Export Full Backup</button>
+          <button class="secondary" id="settingsImportBtn">⬆ Import / Restore Backup</button>
+        </div>
+        <p class="hint" id="settingsBackupCounts"></p>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head"><h2>Local storage &amp; offline status</h2></div>
+      <div class="panel-body" id="settingsStorageBody"></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head"><h2>Live data &amp; refresh</h2></div>
+      <div class="panel-body" id="settingsLiveBody">
+        <div class="btnrow" style="margin-top:10px"><button class="secondary" id="settingsRefreshBtn">↻ Refresh now</button></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head"><h2>Appearance &amp; preferences</h2></div>
+      <div class="panel-body">
+        <p>Theme: <b>Court Side</b> (charcoal surfaces, basketball orange, warm cream text) — the default and only theme available right now.</p>
+        <p class="hint">Win/loss/live/pending/push-void always use the same colors throughout the app: green for a confirmed win, red for a confirmed loss, blue for open/live, amber for pending or needs-review, and neutral gray for a push or void — never orange/amber for a confirmed loss.</p>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head"><h2>App information &amp; data integrity</h2></div>
+      <div class="panel-body">
+        <p id="settingsAppInfo" class="hint" style="margin-top:0"></p>
+        <div class="btnrow"><button class="secondary" id="settingsIntegrityBtn">Run data integrity check</button></div>
+        <div id="settingsIntegrityResult"></div>
+      </div>
+    </section>
+  </section>
+
+  <p class="hint" style="margin-top:18px">Props saved only in this browser, on this computer — not synced anywhere else. Use "Export backup" to save a copy you can restore later or move to another computer.</p>
+</div>
+
+<div class="modal-overlay hide" id="importModalOverlay">
+  <div class="modal-box" id="importModalBox"></div>
+</div>
+
+<div class="modal-overlay hide" id="editModalOverlay">
+  <div class="modal-box" id="editModalBox"></div>
+</div>
+
+<script src="teams.js"></script>
+<script src="parse-slip.js"></script>
+<script src="line-rules.js"></script>
+<script src="prop-status.js"></script>
+<script src="settlement.js"></script>
+<script src="ladder.js"></script>
+<script src="archive.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

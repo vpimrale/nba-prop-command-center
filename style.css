@@ -1,0 +1,208 @@
+/* "Court Side" design system: a dark, charcoal basketball-analytics look — never a
+   neon/casino one. --accent (basketball orange) is for primary actions, selected nav,
+   and highlights ONLY — it must never be used to color a loss/negative result. Win,
+   loss, live, and warning each get their OWN token so no two different meanings ever
+   accidentally share a color (the exact bug fixed in the status-colors pass above). */
+:root{color-scheme:dark;
+  --bg:#17191D;        /* deep charcoal — primary background */
+  --panel:#23262B;      /* elevated charcoal — cards/panels */
+  --panel2:#2A2E35;     /* a touch lighter than --panel — inputs, nested surfaces */
+  --chip:#30343B;       /* lighter still — chips/badges/avatars that sit ON a panel */
+  --line:#3A3F46;       /* borders/dividers — a visible but subtle step up from panel */
+  --text:#F4EBDD;       /* warm cream — primary text (never pure white) */
+  --muted:#A4A9B0;      /* muted gray — secondary text/borders */
+  --accent:#F28C28;     /* basketball orange — primary actions/selected nav/highlights */
+  --win:#22C55E;        /* green — confirmed wins only */
+  --blue:#3B82F6;       /* blue — live/live-tracking only */
+  --warn:#F59E0B;       /* amber — warnings/pending/needs-review only */
+  --bad:#EF4444;        /* red — confirmed losses only */
+  --neutral:#6B7280;    /* neutral gray — push/void/inactive/unavailable */
+  --purple:#c9a6ff}
+
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+/* Installed as a Home Screen app (standalone display, translucent status bar —
+   see manifest.json / index.html), the page runs edge-to-edge with no browser
+   chrome, so content can otherwise sit flush against an iPhone's notch/Dynamic
+   Island or home-indicator. env(safe-area-inset-*) falls back to 0 on any
+   browser that doesn't define it (desktop, Android, plain Safari tabs), so this
+   is a no-op everywhere except a standalone iOS install. */
+header{padding:calc(22px + env(safe-area-inset-top)) max(20px,calc((100vw - 1400px)/2)) 22px;border-bottom:1px solid var(--line);background:#17191Dcc}
+h1{margin:0;font-size:clamp(23px,4vw,34px);letter-spacing:-.04em}
+header p{color:var(--muted);margin:6px 0 0;font-size:13px}
+.wrap{max-width:1400px;margin:auto;padding:18px max(20px,env(safe-area-inset-right)) calc(60px + env(safe-area-inset-bottom)) max(20px,env(safe-area-inset-left))}
+button,select,input,textarea{font:inherit;color:var(--text);background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:9px 11px}
+button{cursor:pointer;font-weight:650}
+button.primary{background:var(--accent);color:#07140f;border-color:transparent}
+button.secondary{background:var(--chip)}
+button:hover{filter:brightness(1.1)}
+button:disabled{opacity:.5;cursor:default;filter:none}
+button.danger{color:var(--bad)}
+.tabs{display:flex;gap:6px;flex-wrap:wrap;margin:16px 0;border-bottom:1px solid var(--line);padding-bottom:0}
+.tab-btn{background:transparent;border:1px solid transparent;border-bottom:none;border-radius:10px 10px 0 0;padding:10px 16px;color:var(--muted);font-weight:700}
+.tab-btn.active{background:var(--panel);color:var(--text);border-color:var(--line);box-shadow:inset 0 -2px 0 0 var(--accent)}
+.tab-btn .badge{display:inline-block;margin-left:6px;background:var(--chip);color:var(--blue);border-radius:99px;padding:1px 7px;font-size:11px}
+.tabpanel{display:none}
+.tabpanel.active{display:block}
+.topbar{display:flex;gap:12px;flex-wrap:wrap;align-items:center;justify-content:space-between;margin-bottom:16px}
+.status{display:flex;align-items:center;gap:9px;color:var(--muted);font-size:13px}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--accent);flex-shrink:0}
+.dot.warn{background:var(--warn)}.dot.bad{background:var(--bad)}
+.save-status{font-size:12px}
+.save-status .dot{width:7px;height:7px;box-shadow:none}
+.actions{display:flex;gap:8px;flex-wrap:wrap}
+.grid{display:grid;grid-template-columns:360px minmax(0,1fr);gap:18px;align-items:start}
+.panel{background:#23262Bd9;border:1px solid var(--line);border-radius:16px;overflow:hidden;margin-bottom:16px}
+.panel-head{padding:14px 18px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;gap:10px;align-items:center}
+.panel-head h2{margin:0;font-size:16px}
+.panel-body{padding:16px}
+.formgrid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.field{display:flex;flex-direction:column;gap:5px;position:relative}
+.field.full{grid-column:1/-1}
+.field label{font-size:12px;color:var(--muted);font-weight:650}
+.field input,.field select{width:100%;min-width:0}
+.hint{font-size:12px;color:var(--muted);margin:10px 0 0}
+.line-help{font-size:11px;color:var(--muted);margin:2px 0 0;min-height:14px}
+.err{font-size:12px;color:var(--bad);margin:8px 0 0;display:none}
+.btnrow{display:flex;gap:8px;margin-top:12px}
+.btnrow button{flex:1}
+.statstrip{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px}
+.statbox{padding:13px;background:var(--panel);border:1px solid var(--line);border-radius:13px}
+.statbox small{display:block;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.08em}
+.statbox strong{font-size:23px;letter-spacing:-.03em}
+.game-section{margin-bottom:14px;border:1px solid var(--line);border-radius:13px;overflow:hidden}
+.game-head{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:12px 15px;background:var(--panel2)}
+.game-title{font-weight:800}
+.game-meta{color:var(--muted);font-size:12px;text-align:right}
+.cards{padding:11px;display:grid;grid-template-columns:repeat(auto-fit,minmax(255px,1fr));gap:10px}
+.prop{border:1px solid var(--line);background:var(--panel2);border-radius:13px;padding:13px;min-width:0}
+.prop-top{display:flex;justify-content:space-between;gap:8px}
+.player{font-weight:800;font-size:15px}
+.market{font-size:12px;color:var(--muted);margin-top:2px}
+.target{font-weight:800;color:var(--blue);white-space:nowrap}
+.numbers{display:flex;justify-content:space-between;align-items:end;margin:13px 0 7px;gap:8px}
+.current{font-size:24px;font-weight:850;letter-spacing:-.04em}
+.current span{font-size:12px;color:var(--muted);font-weight:600}
+.remaining{text-align:right;color:var(--muted);font-size:12px}
+.bar{height:7px;border-radius:99px;background:var(--panel2);overflow:hidden}
+/* This bar tracks progress toward a live number — it is a LIVE indicator, never a
+   settlement color: it must never shade into green (a confirmed win) or red (a
+   confirmed loss) before the ticket's result is actually final. */
+.fill{height:100%;background:linear-gradient(90deg,var(--blue),var(--accent));width:0%;transition:width .35s}
+.fill.under-fail{background:linear-gradient(90deg,var(--warn),var(--bad))}
+.prop-foot{display:flex;justify-content:space-between;gap:8px;margin-top:9px;font-size:12px;color:var(--muted);align-items:center;flex-wrap:wrap}
+.pill{padding:4px 8px;border-radius:99px;font-size:11px;font-weight:800;background:var(--chip);color:var(--blue);white-space:nowrap}
+.pill.hit{background:#173d30;color:var(--win)}.pill.live{background:#1e2a3d;color:var(--blue)}
+.pill.wait{background:#40351f;color:var(--warn)}.pill.final{background:#30283c;color:#d7b8ff}
+.pill.error{background:#43232b;color:var(--bad)}.pill.half{background:#3a2d4a;color:#d7b8ff}
+.pill.push{background:#2a2b2d;color:var(--neutral)}.pill.review{background:#402a1f;color:var(--warn)}
+/* A live target-hit is deliberately its OWN color — the same blue family as .pill.live,
+   never the green of a confirmed win (.pill.hit) — until the ticket's result is final. */
+.pill.live-hit{background:#25334b;color:var(--blue);box-shadow:inset 0 0 0 1px #3a5a8c}
+.empty{padding:32px 16px;text-align:center;color:var(--muted)}
+.empty strong{display:block;color:var(--text);font-size:16px;margin-bottom:6px}
+.notice{padding:12px 14px;border:1px solid #4d3a1a;background:#2b2518;color:var(--warn);border-radius:12px;font-size:12px;margin-bottom:16px}
+.notice.bad{border-color:#5a2a30;background:#2b1a1d;color:var(--bad)}
+.notice.info{border-color:#1e3a5f;background:#1a212b;color:var(--blue)}
+.subtle{color:var(--muted)}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+table{width:100%;border-collapse:collapse;font-size:13px}
+table th{text-align:left;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.06em;padding:8px 10px;border-bottom:1px solid var(--line)}
+table td{padding:9px 10px;border-bottom:1px solid var(--line)}
+table tr:last-child td{border-bottom:none}
+.autocomplete-list{position:absolute;top:100%;left:0;right:0;background:var(--panel2);border:1px solid var(--line);border-radius:10px;max-height:220px;overflow-y:auto;z-index:20;margin-top:4px;box-shadow:0 10px 30px #0008}
+.autocomplete-item{padding:8px 11px;cursor:pointer;font-size:13px;display:flex;justify-content:space-between;gap:8px}
+.autocomplete-item:hover,.autocomplete-item.active{background:var(--chip)}
+.autocomplete-item small{color:var(--muted)}
+.leg-list{display:flex;flex-direction:column;gap:8px;margin:10px 0}
+.leg-row{display:flex;justify-content:space-between;align-items:center;gap:8px;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:9px 11px;font-size:13px}
+.ticket{border:1px solid var(--line);border-radius:14px;padding:14px;margin-bottom:14px;background:var(--panel2)}
+.ticket-head{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:8px}
+.ticket-head h3{margin:0;font-size:16px}
+.chip{display:inline-flex;gap:4px;align-items:center;background:var(--chip);border-radius:99px;padding:3px 9px;font-size:11px;color:var(--muted)}
+.upload-zone{border:2px dashed var(--line);border-radius:14px;padding:30px;text-align:center;color:var(--muted);cursor:pointer}
+.upload-zone:hover{border-color:var(--blue)}
+.review-field{display:grid;grid-template-columns:140px 1fr;gap:10px;align-items:center;padding:7px 0;border-bottom:1px solid var(--line)}
+.review-field.flag{background:#2b251822;border-radius:8px;padding-left:8px}
+.review-field label{color:var(--muted);font-size:12px}
+.flag-tag{color:var(--warn);font-size:11px;margin-left:6px}
+.raw-ocr{white-space:pre-wrap;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:10px;font-size:12px;max-height:200px;overflow-y:auto;color:var(--muted)}
+.tag-select{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+.tag-select button{padding:6px 12px;font-size:13px}
+.tag-select button.active{background:var(--accent);color:#07140f;border-color:transparent}
+.hide{display:none!important}
+.review-box{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin:8px 0}
+.review-box p{margin:4px 0;font-size:13px}
+.modal-overlay{position:fixed;inset:0;background:#00000099;display:flex;align-items:center;justify-content:center;z-index:200;padding:16px}
+.modal-box{background:var(--panel);border:1px solid var(--line);border-radius:16px;max-width:520px;width:100%;max-height:85vh;overflow:auto;padding:20px}
+.modal-box h3{margin:0 0 10px}
+.modal-box p{color:var(--muted);font-size:13px;line-height:1.5}
+.modal-box .btnrow{margin-top:16px;justify-content:flex-end}
+@media(max-width:900px){.grid{grid-template-columns:1fr}.statstrip{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:500px){.formgrid{grid-template-columns:1fr}.field.full{grid-column:auto}.cards{grid-template-columns:1fr}.statstrip{grid-template-columns:repeat(2,1fr)}.review-field{grid-template-columns:1fr}}
+
+/* --- v4 additions: unified status vocabulary, images, overview layout --- */
+.statstrip-6{grid-template-columns:repeat(6,1fr)}
+@media(max-width:1100px){.statstrip-6{grid-template-columns:repeat(3,1fr)}}
+@media(max-width:600px){.statstrip-6{grid-template-columns:repeat(2,1fr)}}
+
+/* A confirmed loss is always the standardized red (var(--bad)), never the orange/amber
+   family that's reserved for "pending/needs review" — the two must never be confusable. */
+.pill.miss{background:#3a1f22;color:var(--bad)}
+.pill.void{background:#2a2b2d;color:var(--neutral);text-decoration:line-through}
+
+.avatar{width:32px;height:32px;border-radius:50%;object-fit:cover;background:var(--chip);flex-shrink:0;display:inline-block;vertical-align:middle}
+.avatar-fallback{width:32px;height:32px;border-radius:50%;background:var(--chip);color:var(--muted);display:inline-flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;flex-shrink:0}
+.team-logo{width:20px;height:20px;object-fit:contain;vertical-align:middle;flex-shrink:0}
+.team-logo-fallback{width:20px;height:20px;border-radius:4px;background:var(--chip);color:var(--muted);display:inline-flex;align-items:center;justify-content:center;font-size:9px;font-weight:800;flex-shrink:0}
+.player-head{display:flex;align-items:center;gap:9px}
+
+.gc-subhead{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin:10px 0 4px;font-weight:700}
+
+.nested-legs{margin-top:10px;padding-left:12px;border-left:2px solid var(--line);display:flex;flex-direction:column;gap:8px}
+.ticket-summary-row{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin:4px 0 8px}
+.collapse-toggle{background:transparent;border:none;color:var(--muted);cursor:pointer;font-size:12px;padding:2px 6px}
+.ov-section-empty{padding:18px;text-align:center;color:var(--muted)}
+.void-btn{font-size:11px;padding:3px 9px}
+.data-freshness{font-size:10px;color:var(--muted)}
+
+/* --- v5 additions: ladders, history, game center --- */
+.statstrip-7{grid-template-columns:repeat(7,1fr)}
+@media(max-width:1100px){.statstrip-7{grid-template-columns:repeat(4,1fr)}}
+@media(max-width:600px){.statstrip-7{grid-template-columns:repeat(2,1fr)}}
+
+.ladder-card{border:1px solid var(--line);border-radius:10px;padding:14px;margin-bottom:12px;background:var(--panel2)}
+.ladder-head{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px}
+.ladder-head h3{margin:0;font-size:15px}
+.ladder-meta-row{display:flex;gap:16px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin-bottom:10px}
+.ladder-progress-bar{height:8px;border-radius:5px;background:var(--panel2);overflow:hidden;margin-bottom:10px}
+.ladder-progress-bar .fill{height:100%;background:var(--accent);border-radius:5px}
+.ladder-steps{display:flex;flex-direction:column;gap:6px}
+.ladder-step-row{display:flex;justify-content:space-between;align-items:center;gap:10px;font-size:12px;padding:6px 8px;border-radius:6px;background:rgba(255,255,255,.03)}
+.ladder-step-num{font-weight:800;color:var(--muted);min-width:28px}
+.ladder-estimated-tag{font-size:10px;color:var(--warn);margin-left:4px}
+
+.addladder-panel{border:1px dashed var(--line);border-radius:8px;padding:10px;margin-top:8px;background:rgba(255,255,255,.02)}
+.addladder-panel .formgrid{margin-top:8px}
+.ladder-link-badge{display:inline-flex;align-items:center;gap:4px;font-size:11px;color:var(--accent);background:rgba(242,140,40,.14);border-radius:5px;padding:2px 7px;margin-left:6px}
+
+.history-row{border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
+.history-row .hr-main{flex:1;min-width:200px}
+.history-row .hr-meta{font-size:11px;color:var(--muted)}
+.hist-check{width:18px;height:18px;flex-shrink:0;cursor:pointer}
+.hist-check-spacer{display:inline-block;width:18px;flex-shrink:0}
+.hist-toolbar{align-items:center}
+
+.gc-group-title{font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin:14px 0 8px}
+.gc-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px}
+.gc-card{border:1px solid var(--line);border-radius:10px;padding:10px 12px;cursor:pointer;background:rgba(255,255,255,.02)}
+.gc-card:hover{border-color:var(--accent)}
+.gc-card-row{display:flex;justify-content:space-between;align-items:center;font-size:13px;margin:2px 0}
+.gc-detail{grid-column:1/-1;border:1px solid var(--line);border-radius:10px;padding:14px;margin-top:4px;background:rgba(255,255,255,.02)}
+.gc-detail-close{float:right}
+.gc-boxtable{width:100%;border-collapse:collapse;font-size:11px;margin-bottom:14px}
+.gc-boxtable th,.gc-boxtable td{padding:4px 6px;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}
+.gc-boxtable th{color:var(--muted);font-weight:600}
+.gc-dnp{opacity:.5}
+.gc-team-head{display:flex;align-items:center;gap:8px;margin:10px 0 6px;font-weight:700}
+@media(max-width:700px){.gc-boxtable{display:block;overflow-x:auto}}

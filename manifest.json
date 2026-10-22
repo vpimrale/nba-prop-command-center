@@ -1,0 +1,17 @@
+{
+  "name": "NBA Prop Command Center",
+  "short_name": "Prop Center",
+  "description": "Personal NBA prop/parlay/ladder tracker. Local data only — see README for cross-device sync limitations.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#17191D",
+  "theme_color": "#17191D",
+  "orientation": "any",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

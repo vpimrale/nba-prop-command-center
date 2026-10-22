@@ -1,0 +1,158 @@
+NBA PROP COMMAND CENTER — v6 — IPHONE INSTRUCTIONS
+================================================================
+This is a separate, beginner-friendly guide just for using the app on an
+iPhone. For the full list of what changed in v6, Windows setup, and test
+results, see README.txt in this same folder — this file only covers the
+iPhone-specific steps.
+
+
+1. OPENING THE APP ON YOUR IPHONE
+================================================================
+The simplest way: someone sends you a link to where this app is hosted
+(for example, a web address your family/you set up), and you open that
+link in Safari on your iPhone. This app does not come with its own
+hosting — if nobody has put it on a website yet, ask whoever set up your
+Windows copy how they'd like to share a link with you, or see README.txt
+section 9 for how a local server can be set up (this requires both
+devices on the same home Wi-Fi).
+
+Once you have a working link:
+1. Open Safari (this MUST be Safari for the Home Screen step below to
+   work — Chrome or other browsers on iPhone can't add apps to your Home
+   Screen the same way).
+2. Go to the link.
+3. The app loads and looks the same as on a computer, just sized for your
+   phone's screen.
+
+
+2. ADDING IT TO YOUR HOME SCREEN (OPTIONAL BUT RECOMMENDED)
+================================================================
+This makes the app open like a regular app — full screen, with its own
+icon — instead of living inside a Safari tab.
+
+1. With the app open in Safari, tap the Share icon (the square with an
+   arrow pointing up, usually at the bottom of the screen).
+2. Scroll down in the share menu and tap "Add to Home Screen."
+3. You can rename it if you'd like (e.g. "NBA Props") — then tap "Add"
+   in the top-right corner.
+4. An icon now appears on your Home Screen like any other app. Tap it
+   any time to open the app directly, full-screen.
+
+IMPORTANT ABOUT THIS ICON: it's a shortcut to the same web app, not a
+separate app with its own copy of anything. Opening it still uses
+Safari's own storage underneath — see section 3 below for what that
+actually means for your data.
+
+
+3. YOUR DATA ON THIS IPHONE — PLEASE READ THIS PART
+================================================================
+This app saves everything (your bets, parlays, ladders) directly on this
+iPhone, inside Safari's local storage. There is no account and nothing
+is uploaded anywhere by this app.
+
+WHAT THAT MEANS, IN PLAIN TERMS:
+  - Your iPhone's data and your Windows PC's data are TWO COMPLETELY
+    SEPARATE COPIES. Adding a bet on your PC does NOT make it show up on
+    your iPhone, and vice versa — not automatically, not ever, unless
+    you manually move a backup file between them (see section 4).
+  - Your data on this iPhone WILL survive: closing the app, restarting
+    your phone, not opening it for weeks, a normal iOS update.
+  - Your data on this iPhone will NOT survive: deleting the Home Screen
+    icon and also clearing Safari's website data for this page,
+    "Clear History and Website Data" in Safari settings, restoring your
+    iPhone from scratch, or setting up a new iPhone (unless you restore
+    a full device backup that includes this).
+  - If you ever see "Low on storage" from iOS generally (not from this
+    app specifically), that's an iPhone-wide situation, not something
+    this app caused.
+
+If this app will be your main copy of your bet tracking, the safest habit
+is: export a backup file every so often (next section) so you have a copy
+that doesn't depend on this one phone.
+
+
+4. SAVING A BACKUP FILE FROM YOUR IPHONE
+================================================================
+A backup is a single file containing everything — bets, parlays, ladders,
+history. You can make one any time, and you should make one before doing
+anything you're unsure about (like a big cleanup in Bet History).
+
+1. Open the app.
+2. Tap the "Export Backup" button (near the top, or inside the new
+   Settings tab under "Data Management & Backups").
+3. Your iPhone's normal Share Sheet appears (the same share menu you'd
+   see sharing a photo).
+4. Tap "Save to Files."
+5. Choose where to save it — "On My iPhone" is simplest, or pick iCloud
+   Drive if you want it to also show up on your other Apple devices
+   automatically through iCloud (that's Apple's own iCloud syncing, not
+   anything this app does).
+6. Tap "Save." The file is now saved with today's date in its name, e.g.
+   NBA-Prop-Command-Center-Backup-2026-10-22.json — you'll find it later
+   in the Files app, in whichever folder you picked.
+
+That's it — that file is now a safe, separate copy of everything, sitting
+in the Files app, independent of whether anything happens to the app
+itself.
+
+
+5. RESTORING A BACKUP FILE ON YOUR IPHONE
+================================================================
+Use this if you want to bring data from a backup file INTO this iPhone —
+for example, a backup you exported from your Windows PC, or an older
+backup of this same phone.
+
+1. Open the app.
+2. Tap "Import Backup" (same two places as Export — top of the app, or
+   inside Settings → Data Management & Backups).
+3. The Files app opens automatically so you can browse to your backup
+   file (look in whichever folder you saved it to — "On My iPhone,"
+   iCloud Drive, etc.).
+4. Tap the backup file to select it.
+5. The app checks the whole file first. If it doesn't look like a real
+   backup from this app, you'll see a clear message explaining that, and
+   nothing on your phone changes.
+6. If the file looks good, you're asked to choose:
+     MERGE (recommended for most people) — adds anything from the backup
+     that isn't already on this iPhone, and leaves everything already
+     here exactly as it was. Perfectly safe to do this more than once
+     with the same file — nothing gets duplicated.
+     REPLACE ALL DATA — erases everything currently on this iPhone and
+     loads only what's in that backup file instead. There's an extra
+     confirmation step for this one because it can't be undone — make
+     sure you really want to start over from that file before confirming.
+7. After either choice, you'll see a short summary of exactly what was
+   added or changed.
+
+
+6. USING IT OFFLINE ON YOUR IPHONE
+================================================================
+If you've added it to your Home Screen (section 2) and opened it at least
+once while online, you can keep using it with no signal or Wi-Fi at all:
+you can still view every saved bet, add a new one, edit a ladder, and
+everything you do is still saved normally on your phone. A banner at the
+top will let you know you're offline, and live scores simply won't update
+until your connection comes back — the app always shows you when the
+numbers were last actually refreshed rather than pretending old numbers
+are current. The moment you're back online, it catches up automatically.
+
+If you never added it to your Home Screen and are just using it in a
+regular Safari tab, it generally still needs an initial connection to
+load the page itself the first time each day — the Home Screen version
+is the more reliable one for true offline use.
+
+
+7. QUICK TROUBLESHOOTING
+================================================================
+- "My bets disappeared!" — First check you're opening the exact same
+  Home Screen icon / the exact same link as before; a different link or
+  a different browser (Safari vs. Chrome) has its own separate storage
+  and will look empty even though your real data is untouched elsewhere.
+  If you do have a backup file (section 4), Import it (section 5) to
+  bring everything back.
+- "It looks like it's stuck loading / outdated" — pull down on the page
+  to refresh, or close and reopen it from the Home Screen icon.
+- "I want this on a new iPhone" — export a backup on the old phone
+  (section 4), get that file onto the new phone (AirDrop, email it to
+  yourself, or iCloud Drive if you used that), open the app fresh on the
+  new phone, then Import that backup file (section 5).
