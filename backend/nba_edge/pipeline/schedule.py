@@ -152,6 +152,8 @@ def run_due(engine: Engine, settings: Settings, *, now: datetime | None = None, 
                                         "status": result["status"], "rows_inserted": result["rows_inserted"],
                                         "credits_reported": result["credits_reported"]})
             summary["status"] = "ok"
+        if settings.research_jobs:
+            summary["research"] = run_research_jobs(engine, settings, now=now, snapshot_ran=bool(summary["runs"]))
     finally:
         client.close()
         with engine.begin() as conn:
@@ -168,3 +170,68 @@ def _still_pregame(engine: Engine, ids: list[str], now: datetime, provider: str)
         rows = conn.execute(select(games.c.provider_event_id).where(and_(games.c.provider == provider,
                             games.c.provider_event_id.in_(ids), games.c.commence_time > now)).order_by(games.c.commence_time))
         return [r[0] for r in rows]
+
+
+def _last_ok(engine: Engine, job: str) -> datetime | None:
+    with engine.connect() as conn:
+        return conn.execute(select(job_runs.c.started_at).where(and_(job_runs.c.job_name == job, job_runs.c.status.in_(["ok", "partial"])))
+                            .order_by(job_runs.c.started_at.desc()).limit(1)).scalar()
+
+
+def _due(engine: Engine, job: str, now: datetime, every_min: int) -> bool:
+    last = _last_ok(engine, job)
+    return last is None or (now - last) >= timedelta(minutes=every_min)
+
+
+def run_research_jobs(engine: Engine, settings: Settings, *, now: datetime, snapshot_ran: bool) -> dict:
+    """ESPN results/injuries ingestion, grading and the slate model, each on its own cadence.
+    Every job is isolated: a failure is recorded in job_runs and never breaks odds capture."""
+    from ..research.espn import EspnClient
+    from ..research.ingest import ingest_dates, ingest_injuries_espn, ingest_injuries_propline
+    from ..model.grading import grade_pending
+    from ..model.run import run_slate
+    from .snapshots import RequestRecorder
+    out: dict = {}
+
+    def guarded(name, fn):
+        try:
+            out[name] = fn()
+        except Exception as e:  # noqa: BLE001 — recorded, not raised
+            log.exception("research job %s failed", name)
+            out[name] = {"status": "failed", "detail": f"{type(e).__name__}: {e}"[:300]}
+            with engine.begin() as conn:
+                conn.execute(insert(job_runs).values(job_name=name, started_at=now, finished_at=utcnow(), status="failed", detail=out[name]["detail"]))
+
+    espn = EspnClient(on_request=RequestRecorder(engine, "espn"))
+    try:
+        new_finals = False
+        if _due(engine, "ingest_espn", now, settings.espn_ingest_every_min):
+            today = now.astimezone(ET).date()
+            guarded("ingest_espn", lambda: ingest_dates(engine, espn, today - timedelta(days=1), today, now=now))
+            new_finals = bool((out.get("ingest_espn") or {}).get("boxes"))
+        if _due(engine, "ingest_injuries:espn", now, settings.injuries_every_min):
+            guarded("ingest_injuries:espn", lambda: ingest_injuries_espn(engine, espn, now=now))
+            if settings.propline_api_key:
+                from ..providers.propline import PropLineClient
+                pc = PropLineClient(settings, on_request=RequestRecorder(engine, "propline"))
+                try:
+                    guarded("ingest_injuries:propline", lambda: ingest_injuries_propline(engine, pc, now=now))
+                finally:
+                    pc.close()
+        if new_finals:
+            guarded("grade", lambda: grade_pending(engine))
+        if snapshot_ran or _due(engine, "model_run", now, settings.model_every_min):
+            if snapshot_ran and not _due(engine, "model_run", now, settings.model_min_gap_min):
+                out["model_run"] = {"status": "skipped", "detail": "ran recently"}
+            else:
+                def model():
+                    r = run_slate(engine, now=now, provider=settings.odds_provider)
+                    with engine.begin() as conn:
+                        conn.execute(insert(job_runs).values(job_name="model_run", started_at=now, finished_at=utcnow(),
+                                                             status="ok" if r["status"] in ("ok", "no_games") else r["status"],
+                                                             detail=f"run {r['id']}: {r['status']} players={r.get('n_players')} quotes={r.get('n_evaluations')} candidates={r.get('n_candidates')}"))
+                    return {"status": r["status"], "run_id": r["id"], "candidates": r.get("n_candidates")}
+                guarded("model_run", model)
+    finally:
+        espn.close()
+    return out

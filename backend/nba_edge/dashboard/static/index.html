@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NBA Prop Research</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div class="brand">NBA Prop Research <span class="tag">local · paper only</span></div>
+  <div id="freshness" class="fresh">loading…</div>
+</header>
+<nav id="tabs">
+  <button data-tab="props" class="active">Top props</button>
+  <button data-tab="proj">Projections</button>
+  <button data-tab="player">Player research</button>
+  <button data-tab="perf">Model performance</button>
+  <button data-tab="data">Data freshness</button>
+</nav>
+<main>
+  <section id="tab-props" class="tab active">
+    <div id="nobet" class="banner"></div>
+    <div class="controls">
+      <label>Decision <select id="f-decision"><option value="">Candidates + watch</option><option>PAPER_CANDIDATE</option><option>WATCH</option><option>NO_BET</option></select></label>
+      <label>Book <select id="f-book"><option value="">FanDuel + Fanatics</option><option value="fanduel">FanDuel</option><option value="fanatics">Fanatics</option></select></label>
+    </div>
+    <p class="hint">Probabilities are the model's, conditional on the player playing (props are void otherwise). EV is per 1 unit staked and already multiplied by the play probability. "EV (cons.)" uses the conservative probability (estimate − parameter uncertainty − calibration margin) that every candidate must clear. Nothing here is a bet recommendation: the model has not yet been validated on live outcomes.</p>
+    <div class="tablewrap"><table id="props-table"></table></div>
+  </section>
+  <section id="tab-proj" class="tab">
+    <div class="controls"><label>Search <input id="f-proj" placeholder="player or team"></label></div>
+    <p class="hint">Mean / median and 10th–90th percentile of 10,000 simulations per player, conditional on playing. "Play" = probability of recording minutes (injury status × recent DNP rate).</p>
+    <div class="tablewrap"><table id="proj-table"></table></div>
+  </section>
+  <section id="tab-player" class="tab">
+    <div class="controls"><label>Player <input id="f-player" list="player-list" placeholder="type a name"></label><datalist id="player-list"></datalist></div>
+    <div id="player-body"><p class="hint">Pick a player from the Projections tab or type a name.</p></div>
+  </section>
+  <section id="tab-perf" class="tab"><div id="perf-body">loading…</div></section>
+  <section id="tab-data" class="tab"><div id="data-body">loading…</div></section>
+</main>
+<script src="app.js"></script>
+</body>
+</html>

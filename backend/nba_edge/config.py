@@ -95,6 +95,13 @@ class Settings:
     interval_end_et: str = "23:00"
     slot_grace_min: int = 25
     events_refresh_min: int = 60
+    # Research jobs inside the scheduler tick (ESPN ingest, injuries, model, grading).
+    # Off for bare Settings() (tests); on via from_env unless RESEARCH_JOBS=0.
+    research_jobs: bool = False
+    espn_ingest_every_min: int = 60
+    injuries_every_min: int = 30
+    model_every_min: int = 60          # run the slate model at least this often on game days
+    model_min_gap_min: int = 20        # ...and after a snapshot, but not more often than this
 
     @classmethod
     def from_env(cls, env: dict | None = None) -> "Settings":
@@ -124,6 +131,11 @@ class Settings:
             interval_start_et=env.get("SNAPSHOT_INTERVAL_START_ET") or base.interval_start_et,
             interval_end_et=env.get("SNAPSHOT_INTERVAL_END_ET") or base.interval_end_et,
             events_refresh_min=_int(env, "EVENTS_REFRESH_MIN", base.events_refresh_min),
+            research_jobs=(env.get("RESEARCH_JOBS", "1").strip() not in ("0", "false", "no")),
+            espn_ingest_every_min=_int(env, "ESPN_INGEST_EVERY_MIN", base.espn_ingest_every_min),
+            injuries_every_min=_int(env, "INJURIES_EVERY_MIN", base.injuries_every_min),
+            model_every_min=_int(env, "MODEL_EVERY_MIN", base.model_every_min),
+            model_min_gap_min=_int(env, "MODEL_MIN_GAP_MIN", base.model_min_gap_min),
         )
 
     def describe(self) -> dict:
@@ -146,4 +158,5 @@ class Settings:
             "fixed_slots_et": list(self.fixed_slots_et),
             "pretip_offsets_min": list(self.pretip_offsets_min),
             "snapshot_interval_min": self.snapshot_interval_min,
+            "research_jobs": self.research_jobs,
         }

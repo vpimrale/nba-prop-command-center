@@ -25,7 +25,7 @@ from sqlalchemy import (Boolean, Column, DateTime, Float, ForeignKey, Index, Int
                         UniqueConstraint)
 from sqlalchemy.types import TypeDecorator
 
-SCHEMA_VERSION = 2  # v2: provenance columns (provider_player_id, line_type, outcome_label, source_*_at, stale)
+SCHEMA_VERSION = 3  # v3: research/model tables (db/research_schema.py); v2: v2: provenance columns (provider_player_id, line_type, outcome_label, source_*_at, stale)
 
 
 class UTCDateTime(TypeDecorator):

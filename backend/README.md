@@ -1,9 +1,15 @@
-# nba-edge backend (odds snapshot pipeline)
+# nba-edge backend (odds snapshots + research/projection engine)
 
 Captures timestamped NBA player-prop odds snapshots (FanDuel + Fanatics first) into an
 append-only database, so a real historical odds dataset accumulates from day one.
 Architecture: [`../docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md). Source audit:
-[`../docs/ODDS_SOURCES.md`](../docs/ODDS_SOURCES.md).
+[`../docs/ODDS_SOURCES.md`](../docs/ODDS_SOURCES.md). **Projection model, validation results
+and known weaknesses: [`../docs/MODEL.md`](../docs/MODEL.md).**
+
+The research engine ingests free ESPN box scores and injuries, projects every rostered
+player on the slate (bench included), runs 10,000 Monte Carlo simulations per player,
+prices every live FanDuel/Fanatics quote, and defaults to **NO BET**. Its outputs are paper
+only until the model has been validated on graded live props.
 
 **Status (2026-11-07):** the default source is **PropLine's free tier** (1,000
 requests/day, $0), **verified live** — real FanDuel and Fanatics NBA props for a full
@@ -51,6 +57,18 @@ stored in the database (requests are recorded by path only), and never printed.
 | `coverage [--date]` | no | observed provider × bookmaker × market coverage for a date (incl. stale counts) |
 | `verify [--date] [--book B]` | no | sanity checks on stored quotes: two-sided pairs, invalid prices, overround, cross-book line agreement, sample rows |
 | `closing --event ID` | no | last pre-tip observation of every quote (closing-line reference) |
+| `ingest-espn [--start --end \| --days N]` | ESPN (free) | schedules + final box scores |
+| `ingest-injuries` | ESPN + 1 PropLine request | injury reports (two sources, most recent wins) |
+| `project [--sims 10000]` | no | slate projections + evaluation of every live FanDuel/Fanatics quote |
+| `grade` | no | grade stored evaluations against final box scores (real lines, real outcomes) |
+| `backtest --start --end [--every N]` | no | walk-forward projection backtest (SIMULATED lines) |
+| `prune [--keep-days 14]` | no | drop old intermediate model evaluations (keeps each game's last pre-tip run) |
+| `serve [--port 8765]` | no | local read-only dashboard: top props, projections, player research, model performance, data freshness |
+
+`run-due` / `run-scheduler` also run the research jobs on their own cadence (ESPN results
+hourly, injuries every 30 min, the model after snapshots or at least hourly, grading when
+new finals arrive), each isolated so a failure never stops odds capture. Disable with
+`RESEARCH_JOBS=0`.
 
 Without the active provider's key (`PROPLINE_API_KEY` or `ODDS_API_KEY`), provider-calling
 commands make **no** request, record a `blocked_no_key` run, print `BLOCKED: ...` and exit 2.
@@ -90,9 +108,9 @@ slots run first) or is recorded as `skipped_budget`.
 NBA_EDGE_TEST_PG_URL=postgresql://postgres@127.0.0.1:55432/postgres .venv/bin/python -m pytest
 ```
 
-Last run (2026-11-07): 49 passed on SQLite; 87 passed with Postgres 16.15 enabled
+Last run (2026-11-07): 65 passed on SQLite; 113 passed with Postgres 16.15 enabled
 (database-backed tests run on both). All provider data in tests is synthetic
-(`tests/fake_provider.py`, `tests/fake_propline.py`); two tests drive the real CLI as a
+(`tests/fake_provider.py`, `tests/fake_propline.py`, `tests/synthetic_league.py`); two tests drive the real CLI as a
 subprocess over real HTTP against local fake servers.
 
 ## The Odds API (paid adapter) — not yet verified live (needs a key + network access)

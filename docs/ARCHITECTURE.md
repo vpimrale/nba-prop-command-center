@@ -21,8 +21,11 @@ and covered by automated tests (synthetic data); **designed** = schema/plan only
  │ nba_edge.pipeline  snapshot capture · scheduler · credit budget      built+tested    │
  │ nba_edge.queries   status/job health · coverage · closing lines      built+tested    │
  │ nba_edge.db        SQLAlchemy Core schema (SQLite ⇄ Postgres)        built+tested    │
- │ stats/injuries/lineups ingestion (Stage 2)                           not started     │
- │ projections + simulation (Stage 3), pricing/EV (Stage 4)             not started     │
+ │ nba_edge.research  ESPN box scores/schedules/injuries, name+team     built+tested    │
+ │                    matching (PropLine injuries as 2nd source)                        │
+ │ nba_edge.model     minutes/rates/context, 10k Monte Carlo, pricing,  built+tested    │
+ │                    NO-BET gates, grading, backtest, retention                        │
+ │ nba_edge.dashboard local read-only research dashboard (127.0.0.1)    built+tested    │
  └──────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -102,10 +105,10 @@ cron (which can start many minutes late) is not recommended.
 | 0 | settlement fix, persisted results, test suite, pinned OCR | done |
 | 1 | backend, DB, odds snapshot pipeline, scheduler, job health | built + tested; **live-verified on PropLine free tier** (FanDuel + Fanatics) |
 | 1b | provider abstraction; PropLine adapter (bulk + fallback, milestones, stale/suspended/withdrawn handling, burst vs daily limits) | done; live-verified |
-| 2 | schedule/rosters/game logs; official NBA injury report PDFs; starting lineups confirmed at tip-off; player→team resolution for snapshots | not started |
-| 3 | minutes + production projections with shrinkage; Monte Carlo distributions; projection-accuracy validation on box scores | not started |
-| 4 | vig removal, fair odds, EV, uncertainty-aware thresholds, NO BET default | not started |
-| 5 | dashboard tabs (slate, props, data status) reading a read-only backend API | not started |
-| 6 | paper trading, calibration, CLV (30-day period) | not started |
+| 2 | ESPN schedules/box scores/injuries (+ PropLine injuries); player matching | done (official NBA injury PDFs and pre-tip confirmed lineups: not yet — ESPN/PropLine injury lists used) |
+| 3 | minutes + rate projections with shrinkage; 10k Monte Carlo; walk-forward validation | done — v1.2, see docs/MODEL.md |
+| 4 | no-vig, fair odds, EV, uncertainty-aware gates, NO BET default | done |
+| 5 | dashboard: top props, projections, player research, model performance, data freshness | done (local, read-only; separate from the tracker PWA) |
+| 6 | paper trading, live calibration, CLV (30-day period) | infrastructure done; record starts accumulating 2026-11-07 |
 | 7 | correlated parlays (joint simulation), fractional-Kelly sizing with caps | not started |
 | 8 | historical backtest — only if a historical-odds backfill is approved | not started |

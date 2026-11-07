@@ -6,6 +6,7 @@ import os
 from sqlalchemy import create_engine, event, inspect, insert, select, text
 from sqlalchemy.engine import Engine
 
+from . import research_schema  # noqa: F401  (registers research/model tables on metadata)
 from .schema import SCHEMA_VERSION, metadata, schema_info, utcnow
 
 

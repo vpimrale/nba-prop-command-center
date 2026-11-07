@@ -126,6 +126,101 @@ def cmd_budget(settings, args) -> int:
     return 0
 
 
+# ----------------------------------------------------------------- research / model
+def _espn(engine):
+    from .pipeline.snapshots import RequestRecorder
+    from .research.espn import EspnClient
+    return EspnClient(on_request=RequestRecorder(engine, "espn"))
+
+
+def cmd_ingest_espn(settings, args) -> int:
+    from datetime import date, timedelta
+    from .research.ingest import ingest_dates
+    engine = _engine(settings)
+    today = datetime.now(timezone.utc).astimezone(ET).date()
+    start = date.fromisoformat(args.start) if args.start else today - timedelta(days=args.days)
+    end = date.fromisoformat(args.end) if args.end else today
+    c = _espn(engine)
+    try:
+        r = ingest_dates(engine, c, start, end, refetch=args.refetch)
+    finally:
+        c.close()
+    _print(r)
+    return 0 if r["status"] in ("ok", "partial") else 2
+
+
+def cmd_ingest_injuries(settings, args) -> int:
+    from .research.ingest import ingest_injuries_espn, ingest_injuries_propline
+    engine = _engine(settings)
+    out = {}
+    c = _espn(engine)
+    try:
+        out["espn"] = ingest_injuries_espn(engine, c)
+    finally:
+        c.close()
+    if settings.propline_api_key and not args.espn_only:
+        from .providers.propline import PropLineClient
+        from .pipeline.snapshots import RequestRecorder
+        pc = PropLineClient(settings, on_request=RequestRecorder(engine, "propline"))
+        try:
+            out["propline"] = ingest_injuries_propline(engine, pc)
+        except Exception as e:  # secondary source: report, don't fail the command
+            out["propline"] = {"status": "failed", "detail": str(e)}
+        finally:
+            pc.close()
+    _print(out)
+    return 0
+
+
+def cmd_project(settings, args) -> int:
+    from dataclasses import replace
+    from .model.config import ModelConfig
+    from .model.run import run_slate
+    cfg = replace(ModelConfig(), n_sims=args.sims)
+    r = run_slate(_engine(settings), date_et=args.date, cfg=cfg, provider=settings.odds_provider, seed=args.seed)
+    _print(r)
+    return 0 if r["status"] in ("ok", "no_games") else 2
+
+
+def cmd_grade(settings, args) -> int:
+    from .model.grading import grade_pending, live_performance
+    engine = _engine(settings)
+    _print({"grading": grade_pending(engine), "live_performance": live_performance(engine)})
+    return 0
+
+
+def cmd_backtest(settings, args) -> int:
+    from datetime import date
+    from dataclasses import replace
+    from .model.backtest import run_backtest
+    from .model.config import ModelConfig
+    r = run_backtest(_engine(settings), date.fromisoformat(args.start), date.fromisoformat(args.end), every_n_days=args.every,
+                     n_sims=args.sims, cfg=replace(ModelConfig()), max_dates=args.max_dates)
+    s = r["summary"]
+    _print({"backtest_id": r["backtest_id"], "dates": r["dates"], "rows": r["rows"], "line_method": s.get("line_method"),
+            "all_markets": {k: {kk: vv for kk, vv in v.items() if kk != "reliability"} for k, v in (s.get("all_markets") or {}).items() if v},
+            "markets": {k: {"n": v["n"], "mae": v["mae_mean"], "bias": v["bias_mean_minus_actual"], "brier": v["model"]["brier"],
+                            "brier_hit_rate": (v["raw_L10_hit_rate_baseline"] or {}).get("brier"), "ece": v["model"]["ece"]} for k, v in s["markets"].items()}})
+    return 0
+
+
+def cmd_prune(settings, args) -> int:
+    from .model.retention import prune_evaluations
+    _print(prune_evaluations(_engine(settings), keep_days=args.keep_days))
+    return 0
+
+
+def cmd_serve(settings, args) -> int:
+    from .dashboard.server import serve
+    httpd = serve(_engine(settings), args.host, args.port)
+    print(f"dashboard: http://{args.host}:{httpd.server_address[1]}/  (Ctrl-C to stop; local, read-only)", file=sys.stderr)
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="nba-edge", description="NBA Quant Edge backend: odds snapshots (default source: PropLine free tier)")
     p.add_argument("--log-level", default="INFO")
@@ -154,6 +249,28 @@ def build_parser() -> argparse.ArgumentParser:
     cl = sub.add_parser("closing", help="last pre-tip observation of every quote for an event")
     cl.add_argument("--event", required=True)
     cl.set_defaults(fn=cmd_closing)
+    ie = sub.add_parser("ingest-espn", help="ESPN schedules + final box scores (free) for a date range")
+    ie.add_argument("--start"); ie.add_argument("--end"); ie.add_argument("--days", type=int, default=2)
+    ie.add_argument("--refetch", action="store_true")
+    ie.set_defaults(fn=cmd_ingest_espn)
+    ii = sub.add_parser("ingest-injuries", help="injury reports: ESPN (+ PropLine's free endpoint if a key is set)")
+    ii.add_argument("--espn-only", action="store_true")
+    ii.set_defaults(fn=cmd_ingest_injuries)
+    pj = sub.add_parser("project", help="project every player on today's (ET) slate and evaluate live FanDuel/Fanatics quotes")
+    pj.add_argument("--date"); pj.add_argument("--sims", type=int, default=10_000); pj.add_argument("--seed", type=int)
+    pj.set_defaults(fn=cmd_project)
+    gr = sub.add_parser("grade", help="grade stored evaluations against final box scores (real lines, real outcomes)")
+    gr.set_defaults(fn=cmd_grade)
+    bt = sub.add_parser("backtest", help="walk-forward projection backtest on historical box scores (SIMULATED lines)")
+    bt.add_argument("--start", required=True); bt.add_argument("--end", required=True)
+    bt.add_argument("--every", type=int, default=3); bt.add_argument("--sims", type=int, default=2000); bt.add_argument("--max-dates", type=int)
+    bt.set_defaults(fn=cmd_backtest)
+    pr = sub.add_parser("prune", help="retention: drop old non-final model evaluations (keeps each game's last pre-tip run)")
+    pr.add_argument("--keep-days", type=int, default=14)
+    pr.set_defaults(fn=cmd_prune)
+    sv = sub.add_parser("serve", help="local read-only research dashboard")
+    sv.add_argument("--host", default="127.0.0.1"); sv.add_argument("--port", type=int, default=8765)
+    sv.set_defaults(fn=cmd_serve)
     b = sub.add_parser("budget", help="estimate monthly credit use for the current market/book config")
     b.add_argument("--games-per-day", type=float, default=7.5)
     b.add_argument("--snapshots-per-game", type=float, default=4)
