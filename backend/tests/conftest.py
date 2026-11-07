@@ -50,7 +50,7 @@ def engine(db_url):
 
 @pytest.fixture
 def settings(db_url):
-    return Settings(database_url=Secret(db_url), odds_api_key=Secret("test-dummy-key-0000"),
+    return Settings(database_url=Secret(db_url), odds_provider="the-odds-api", bookmakers=("fanduel", "fanatics"), odds_api_key=Secret("test-dummy-key-0000"),
                     odds_api_base_url="https://odds.invalid", markets=("player_points", "player_points_alternate", "player_rebounds"),
                     monthly_credit_budget=10_000, max_credits_per_run=5_000, max_retries=2)
 

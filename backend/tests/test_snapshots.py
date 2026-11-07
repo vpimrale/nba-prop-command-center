@@ -17,7 +17,7 @@ def _run(engine, settings, provider, now=NOW, event_ids=None, **kw):
     with client:
         if event_ids is None:
             refresh_events(engine, client, now)
-            event_ids = upcoming_event_ids(engine, now)
+            event_ids = upcoming_event_ids(engine, now, provider=client.name)
         return run_snapshot(engine, settings, client, rec, event_ids=event_ids, now=now, **kw)
 
 
@@ -90,7 +90,7 @@ def test_failed_fetch_never_writes_tombstones(engine, settings, provider):
 
 def test_unrequested_markets_are_never_tombstoned(engine, settings, provider):
     _run(engine, settings, provider)
-    narrow = Settings(database_url=settings.database_url, odds_api_key=settings.odds_api_key, markets=("player_points",), max_retries=0)
+    narrow = Settings(database_url=settings.database_url, odds_provider="the-odds-api", bookmakers=settings.bookmakers, odds_api_key=settings.odds_api_key, markets=("player_points",), max_retries=0)
     r = _run(engine, narrow, provider, now=NOW + timedelta(minutes=5), event_ids=["evt1"])
     assert r["rows_removed"] == 0
 
@@ -122,7 +122,7 @@ def test_malformed_200_is_an_explicit_failure(engine, settings):
 
 
 def test_no_key_means_no_calls_and_an_explicit_blocked_run(engine, settings, provider):
-    nokey = Settings(database_url=settings.database_url, odds_api_key=Secret(None))
+    nokey = Settings(database_url=settings.database_url, odds_provider="the-odds-api", bookmakers=settings.bookmakers, odds_api_key=Secret(None))
     r = _run(engine, nokey, provider, event_ids=["evt1"])
     assert r["status"] == "blocked_no_key" and provider.requests == []
     assert "ODDS_API_KEY" in r["detail"]
@@ -135,12 +135,12 @@ def test_bad_key_is_reported_as_blocked_auth(engine, settings, provider):
 
 
 def test_budget_guard_limits_or_skips_calls(engine, settings, provider):
-    tight = Settings(database_url=settings.database_url, odds_api_key=settings.odds_api_key, markets=settings.markets,
+    tight = Settings(database_url=settings.database_url, odds_provider="the-odds-api", bookmakers=settings.bookmakers, odds_api_key=settings.odds_api_key, markets=settings.markets,
                      monthly_credit_budget=10_000, max_credits_per_run=3)  # 3 markets/event -> 1 event fits
     _run(engine, tight, provider, event_ids=[])  # no-op run (no_events)
     r = _run(engine, tight, provider, event_ids=["evt1", "evt2"])
     assert r["events_fetched"] == 1 and "budget" in r["detail"]
-    zero = Settings(database_url=settings.database_url, odds_api_key=settings.odds_api_key, markets=settings.markets, max_credits_per_run=2)
+    zero = Settings(database_url=settings.database_url, odds_provider="the-odds-api", bookmakers=settings.bookmakers, odds_api_key=settings.odds_api_key, markets=settings.markets, max_credits_per_run=2)
     n = len(provider.requests)
     r2 = _run(engine, zero, provider, event_ids=["evt1"])
     assert r2["status"] == "skipped_budget" and len(provider.requests) == n

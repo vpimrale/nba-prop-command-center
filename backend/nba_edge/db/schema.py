@@ -25,7 +25,7 @@ from sqlalchemy import (Boolean, Column, DateTime, Float, ForeignKey, Index, Int
                         UniqueConstraint)
 from sqlalchemy.types import TypeDecorator
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2  # v2: provenance columns (provider_player_id, line_type, outcome_label, source_*_at, stale)
 
 
 class UTCDateTime(TypeDecorator):
@@ -76,6 +76,7 @@ snapshot_runs = Table(
     Column("id", Integer, primary_key=True, autoincrement=True),
     Column("slot_key", String(120), index=True),     # scheduler slot this run served (None for manual runs)
     Column("reason", String(40), nullable=False),     # fixed | pretip | closing | manual
+    Column("provider", String(40)),                   # v2
     Column("started_at", UTCDateTime, nullable=False),
     Column("finished_at", UTCDateTime),
     # running | ok | partial | failed | blocked_no_key | blocked_auth | skipped_budget | no_events | missed
@@ -87,6 +88,7 @@ snapshot_runs = Table(
     Column("rows_inserted", Integer, nullable=False, default=0),
     Column("rows_removed", Integer, nullable=False, default=0),
     Column("outcomes_skipped", Integer, nullable=False, default=0),
+    Column("quotes_stale", Integer),                  # v2: quotes flagged stale in this run
     Column("credits_estimated", Integer),
     Column("credits_reported", Integer),   # sum of provider x-requests-last for this run
     Column("credits_remaining", Integer),  # last provider x-requests-remaining seen
@@ -151,6 +153,13 @@ _quote_cols = lambda: [  # noqa: E731 — shared column set for snapshots + curr
     Column("american_odds", Integer),
     Column("decimal_odds", Float),
     Column("market_status", String(12), nullable=False),  # active | removed
+    # v2 provenance (nullable; populated by providers that expose them)
+    Column("provider_player_id", String(40)),   # e.g. "nba:<personId>" (NBA CDN personId)
+    Column("line_type", String(20)),            # provider label: main | alternate | milestone
+    Column("outcome_label", String(80)),        # original outcome text, e.g. "10+ Points"
+    Column("source_seen_at", UTCDateTime),      # provider's last sighting of the outcome
+    Column("source_changed_at", UTCDateTime),   # provider's last observed price change
+    Column("stale", Boolean),                   # provider feed older than the freshness threshold
 ]
 
 odds_snapshots = Table(

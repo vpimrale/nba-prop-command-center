@@ -57,6 +57,15 @@ DEFAULT_DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(_
 @dataclass(frozen=True)
 class Settings:
     database_url: Secret = field(default_factory=lambda: Secret(f"sqlite:///{DEFAULT_DB_PATH}"))
+    # Which odds source to use: "propline" (free tier, default) or "the-odds-api" (paid).
+    odds_provider: str = "propline"
+    propline_api_key: Secret = field(default_factory=lambda: Secret(None))
+    propline_base_url: str = "https://api.prop-line.com/v1"
+    # PropLine free tier = 1,000 requests per UTC day; keep headroom for manual use.
+    daily_request_budget: int = 800
+    # Quotes whose bookmaker feed is older than this (provider's last_update) are stored
+    # but flagged stale, and reported as such — never shown as current.
+    stale_after_min: int = 20
     odds_api_key: Secret = field(default_factory=lambda: Secret(None))
     odds_api_base_url: str = "https://api.the-odds-api.com"
     sport_key: str = "basketball_nba"
@@ -65,6 +74,8 @@ class Settings:
     # (seen via web search, not fetched — see docs), Fanatics is "only available on paid
     # subscriptions", so on a free key it is expected to be absent from responses.
     bookmakers: tuple[str, ...] = ("fanduel", "fanatics")
+    # (Add reference books via ODDS_API_BOOKMAKERS, e.g. fanduel,fanatics,draftkings,pinnacle —
+    # on PropLine extra books cost no extra requests.)
     markets: tuple[str, ...] = DEFAULT_MARKET_KEYS
     # Credit controls. These are LOCAL guards against overspending a plan the user has
     # chosen; they purchase nothing. monthly_credit_budget should be set to the plan's
@@ -78,6 +89,10 @@ class Settings:
     # "closing" snapshot used for closing-line value.
     fixed_slots_et: tuple[str, ...] = ("10:00", "15:00")
     pretip_offsets_min: tuple[int, ...] = (60, 10)
+    # Optional extra fixed slots every N minutes between interval_start_et and interval_end_et.
+    snapshot_interval_min: int = 0
+    interval_start_et: str = "10:00"
+    interval_end_et: str = "23:00"
     slot_grace_min: int = 25
     events_refresh_min: int = 60
 
@@ -87,6 +102,11 @@ class Settings:
         base = cls()
         return cls(
             database_url=Secret(env.get("NBA_EDGE_DATABASE_URL") or base.database_url.reveal()),
+            odds_provider=(env.get("ODDS_PROVIDER") or base.odds_provider).strip().lower(),
+            propline_api_key=Secret(env.get("PROPLINE_API_KEY")),
+            propline_base_url=env.get("PROPLINE_BASE_URL") or base.propline_base_url,
+            daily_request_budget=_int(env, "ODDS_DAILY_REQUEST_BUDGET", base.daily_request_budget),
+            stale_after_min=_int(env, "ODDS_STALE_AFTER_MIN", base.stale_after_min),
             odds_api_key=Secret(env.get("ODDS_API_KEY")),
             odds_api_base_url=env.get("ODDS_API_BASE_URL") or base.odds_api_base_url,
             sport_key=env.get("ODDS_API_SPORT") or base.sport_key,
@@ -100,6 +120,9 @@ class Settings:
             fixed_slots_et=_csv(env.get("SNAPSHOT_FIXED_SLOTS_ET"), base.fixed_slots_et),
             pretip_offsets_min=tuple(int(x) for x in _csv(env.get("SNAPSHOT_PRETIP_OFFSETS_MIN"), tuple(map(str, base.pretip_offsets_min)))),
             slot_grace_min=_int(env, "SNAPSHOT_SLOT_GRACE_MIN", base.slot_grace_min),
+            snapshot_interval_min=_int(env, "SNAPSHOT_INTERVAL_MIN", base.snapshot_interval_min),
+            interval_start_et=env.get("SNAPSHOT_INTERVAL_START_ET") or base.interval_start_et,
+            interval_end_et=env.get("SNAPSHOT_INTERVAL_END_ET") or base.interval_end_et,
             events_refresh_min=_int(env, "EVENTS_REFRESH_MIN", base.events_refresh_min),
         )
 
@@ -107,6 +130,11 @@ class Settings:
         """Safe-to-print view of the configuration (no secret values)."""
         return {
             "database_url": redact_url(self.database_url.reveal() or ""),
+            "odds_provider": self.odds_provider,
+            "propline_api_key": "set" if self.propline_api_key else "NOT SET",
+            "propline_base_url": self.propline_base_url,
+            "daily_request_budget": self.daily_request_budget,
+            "stale_after_min": self.stale_after_min,
             "odds_api_key": "set" if self.odds_api_key else "NOT SET",
             "odds_api_base_url": self.odds_api_base_url,
             "sport_key": self.sport_key,
@@ -117,4 +145,5 @@ class Settings:
             "max_credits_per_run": self.max_credits_per_run,
             "fixed_slots_et": list(self.fixed_slots_et),
             "pretip_offsets_min": list(self.pretip_offsets_min),
+            "snapshot_interval_min": self.snapshot_interval_min,
         }

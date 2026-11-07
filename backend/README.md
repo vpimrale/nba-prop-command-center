@@ -1,13 +1,25 @@
-# nba-edge backend (Stage 1: odds snapshot pipeline)
+# nba-edge backend (odds snapshot pipeline)
 
 Captures timestamped NBA player-prop odds snapshots (FanDuel + Fanatics first) into an
 append-only database, so a real historical odds dataset accumulates from day one.
-Architecture and rationale are in [`../docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md).
+Architecture: [`../docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md). Source audit:
+[`../docs/ODDS_SOURCES.md`](../docs/ODDS_SOURCES.md).
 
-**Status (2026-11-07): built and tested against a synthetic provider only.** No odds
-API key is configured and no plan has been purchased, so the pipeline has never talked
-to the real provider. Everything below that says "verified" means verified by the test
-suite with synthetic data. Nothing is deployed.
+**Status (2026-11-07):** the default source is **PropLine's free tier** (1,000
+requests/day, $0), **verified live** — real FanDuel and Fanatics NBA props for a full
+7-game slate were fetched, stored and sanity-checked (see the source audit). The Odds
+API remains available as a paid adapter (`ODDS_PROVIDER=the-odds-api`). Nothing is
+deployed; snapshots only accumulate while something runs the scheduler.
+
+**Data handling:** PropLine's terms prohibit bulk redistribution. The database
+(`backend/data/`, git-ignored) must not be committed or published; test fixtures are
+synthetic.
+
+## Getting a free PropLine key
+Enter an email at https://prop-line.com (no card). Provide it as `PROPLINE_API_KEY`.
+In this project's Claude cloud environment the key is stored as a network secret and
+injected by the proxy, so set `PROPLINE_API_KEY=proxy-injected` there (any placeholder;
+the proxy overwrites the header).
 
 ## Setup
 
@@ -26,25 +38,45 @@ stored in the database (requests are recorded by path only), and never printed.
 
 ## Commands
 
-| Command | Calls the paid provider? | What it does |
+| Command | Calls the odds provider? | What it does |
 |---|---|---|
 | `config` | no | effective configuration (no secrets) |
 | `init-db` | no | create/upgrade schema |
-| `budget [--games-per-day N --snapshots-per-game M]` | no | upper-bound monthly credit estimate for the current market/book config |
-| `refresh-events` | yes (events list; documented as free) | upcoming NBA events (next 36h) |
+| `budget [--games-per-day N --snapshots-per-game M]` | no | PropLine: upper-bound requests/day for the schedule; The Odds API: monthly credits |
+| `refresh-events` | yes (1 request on PropLine) | upcoming NBA events (next 36h) |
 | `snapshot [--event ID] [--date YYYY-MM-DD]` | **yes** | capture now, for today's (ET) not-yet-started games |
 | `run-due` | **yes** | one scheduler tick: serve due slots (run every ~5 min from cron/systemd) |
 | `run-scheduler [--interval 300]` | **yes** | the same, as a long-running loop |
 | `status` | no | data freshness, job health, missed slots, credits (provider-reported) |
-| `coverage [--date]` | no | observed bookmaker × market coverage for a date |
+| `coverage [--date]` | no | observed provider × bookmaker × market coverage for a date (incl. stale counts) |
+| `verify [--date] [--book B]` | no | sanity checks on stored quotes: two-sided pairs, invalid prices, overround, cross-book line agreement, sample rows |
 | `closing --event ID` | no | last pre-tip observation of every quote (closing-line reference) |
 
-Without `ODDS_API_KEY`, provider-calling commands make **no** request, record a
-`blocked_no_key` run, print `BLOCKED: ...` and exit 2.
+Without the active provider's key (`PROPLINE_API_KEY` or `ODDS_API_KEY`), provider-calling
+commands make **no** request, record a `blocked_no_key` run, print `BLOCKED: ...` and exit 2.
+
+### PropLine specifics
+* One **bulk** request (`/sports/basketball_nba/odds`) returns props for the whole
+  near-term slate; events not in it are fetched per event (1 request each).
+* Main lines (Over/Under) are stored as `player_points` etc.; milestone ladders
+  ("25+ Points") as `player_points_milestone`, side `over`, line 24.5, with the original
+  label in `outcome_label`; other line types as `<market>_alternate`.
+* Not stored: suspended markets, outcomes the book is withdrawing, non-full-game
+  periods, unrecognized outcome shapes, and DFS pick'em boards (PrizePicks, Underdog,
+  Pick6, …: synthetic/payout-scaled prices). Counts are written to the run's `detail`.
+* Quotes whose bookmaker feed is older than `ODDS_STALE_AFTER_MIN` (default 20) are
+  stored with `stale=true` and counted; unknown freshness counts as stale.
+* 429 `burst_limit_exceeded` is retried after the provider's `retry_after_seconds`;
+  429 `daily_limit_exceeded` stops the run (`quota_exhausted`) — no retry until UTC reset;
+  403 `upgrade_required` (paid feature) is never retried.
+* Each row keeps PropLine's NBA player id (`provider_player_id`, `nba:<personId>`) and
+  each game its ESPN event id (`games.espn_event_id`) for joining to the tracker/stats.
 
 ### Spend guards (local, purchase nothing)
-* `ODDS_MONTHLY_CREDIT_BUDGET` (default 500 = free tier) — measured against credits the
-  provider *reported* in `x-requests-last` this calendar month.
+* PropLine: `ODDS_DAILY_REQUEST_BUDGET` (default 800 of the free 1,000/UTC day), measured
+  from recorded requests; plus the provider's `X-Daily-Remaining` for today.
+* The Odds API: `ODDS_MONTHLY_CREDIT_BUDGET` (default 500 = free tier) — measured against
+  credits the provider *reported* in `x-requests-last` this calendar month.
 * `ODDS_MAX_CREDITS_PER_RUN` (default 300).
 * The provider's own `x-requests-remaining`, once seen.
 A run that would exceed the tightest limit fetches only the events that fit (closing
@@ -58,12 +90,12 @@ slots run first) or is recorded as `skipped_budget`.
 NBA_EDGE_TEST_PG_URL=postgresql://postgres@127.0.0.1:55432/postgres .venv/bin/python -m pytest
 ```
 
-Last run (2026-11-07): 26 passed on SQLite; 46 passed with Postgres 16.15 enabled
-(20 database-backed tests run on both). All provider data in tests is synthetic
-(`tests/fake_provider.py`); one test drives the real CLI as a subprocess over real HTTP
-against a local fake server.
+Last run (2026-11-07): 49 passed on SQLite; 87 passed with Postgres 16.15 enabled
+(database-backed tests run on both). All provider data in tests is synthetic
+(`tests/fake_provider.py`, `tests/fake_propline.py`); two tests drive the real CLI as a
+subprocess over real HTTP against local fake servers.
 
-## Not yet verified (needs a key + network access to api.the-odds-api.com)
+## The Odds API (paid adapter) — not yet verified live (needs a key + network access)
 * That the market keys in `nba_edge/odds/markets.py` are all accepted for NBA.
 * Which of those markets FanDuel and Fanatics actually return, and how many alternate
   lines; whether Fanatics is returned at all on a given plan.

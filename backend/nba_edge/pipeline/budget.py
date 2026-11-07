@@ -45,36 +45,65 @@ def month_start(now: datetime) -> datetime:
     return now.astimezone(timezone.utc).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
 
-def credits_used_this_month(conn: Connection, now: datetime) -> int:
-    q = select(func.coalesce(func.sum(api_requests.c.credits_last), 0)).where(api_requests.c.requested_at >= month_start(now))
+def day_start(now: datetime) -> datetime:
+    return now.astimezone(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def window_start(window: str, now: datetime) -> datetime:
+    return day_start(now) if window == "day" else month_start(now)
+
+
+def units_used(conn: Connection, now: datetime, *, provider: str = "the-odds-api", window: str = "month") -> int:
+    """Provider-REPORTED usage (credits, or requests) in the current metering window."""
+    q = select(func.coalesce(func.sum(api_requests.c.credits_last), 0)).where(
+        api_requests.c.requested_at >= window_start(window, now), api_requests.c.provider == provider)
     return int(conn.execute(q).scalar() or 0)
 
 
-def last_reported_remaining(conn: Connection) -> int | None:
+def credits_used_this_month(conn: Connection, now: datetime, provider: str | None = None) -> int:
+    q = select(func.coalesce(func.sum(api_requests.c.credits_last), 0)).where(api_requests.c.requested_at >= month_start(now))
+    if provider:
+        q = q.where(api_requests.c.provider == provider)
+    return int(conn.execute(q).scalar() or 0)
+
+
+def last_reported_remaining(conn: Connection, provider: str | None = None, since: datetime | None = None) -> int | None:
     q = (select(api_requests.c.credits_remaining).where(api_requests.c.credits_remaining.is_not(None))
          .order_by(api_requests.c.requested_at.desc(), api_requests.c.id.desc()).limit(1))
+    if provider:
+        q = q.where(api_requests.c.provider == provider)
+    if since is not None:
+        q = q.where(api_requests.c.requested_at >= since)
     return conn.execute(q).scalar()
 
 
 @dataclass
 class BudgetDecision:
-    events_allowed: int
-    per_event_estimate: int
+    units_allowed: int
+    estimate: int
     limit: int
     reason: str
 
+    @property
+    def events_allowed(self) -> int:  # backwards-compatible name used in older callers
+        return self.units_allowed
 
-def decide(settings: Settings, conn: Connection, n_events: int, now: datetime) -> BudgetDecision:
-    per_event = estimate_event_call_cost(settings)
-    month_left = settings.monthly_credit_budget - credits_used_this_month(conn, now)
-    provider_left = last_reported_remaining(conn)
-    limits = {"per-run cap": settings.max_credits_per_run, "monthly budget": month_left}
-    if provider_left is not None:
-        limits["provider-reported remaining"] = provider_left
+
+def decide(settings: Settings, conn: Connection, provider, n_events: int, now: datetime) -> BudgetDecision:
+    """How many metered units this run may spend: the tightest of the per-run cap, the
+    configured window budget, and the provider-reported remaining for this window."""
+    window = provider.budget_window
+    window_budget = settings.daily_request_budget if window == "day" else settings.monthly_credit_budget
+    left = window_budget - units_used(conn, now, provider=provider.name, window=window)
+    limits = {"per-run cap": settings.max_credits_per_run, f"{window}ly budget".replace("dayly", "daily"): left}
+    remaining = last_reported_remaining(conn, provider.name, since=window_start(window, now))
+    if remaining is not None:
+        limits["provider-reported remaining"] = remaining
     name, limit = min(limits.items(), key=lambda kv: kv[1])
-    allowed = 0 if per_event <= 0 else max(0, min(n_events, limit // per_event))
-    reason = "ok" if allowed >= n_events else f"limited by {name} ({limit} credits left; ~{per_event}/event)"
-    return BudgetDecision(allowed, per_event, limit, reason)
+    estimate = provider.estimate_units(n_events)
+    allowed = max(0, limit)
+    reason = "ok" if allowed >= estimate else f"limited by {name} ({limit} left; estimate {estimate} for {n_events} event(s))"
+    return BudgetDecision(allowed, estimate, limit, reason)
 
 
 def estimate_month(settings: Settings, games_per_day: float, snapshots_per_game: float, days: int = 30) -> dict:
@@ -87,3 +116,18 @@ def estimate_month(settings: Settings, games_per_day: float, snapshots_per_game:
         "estimated_credits_upper_bound": total,
         "smallest_published_tier_that_fits_UNVERIFIED": fits[0] if fits else "none of the published tiers",
     }
+
+
+def estimate_day_requests(settings: Settings, games_per_day: float) -> dict:
+    """Request-metered providers (PropLine): one bulk call per scheduler run covers the
+    near-term slate. Upper bound = fixed/interval slots + one run per pre-tip slot per
+    game (simultaneous tips actually share a run) + hourly events refreshes."""
+    from .schedule import fixed_slot_times
+    fixed = len(fixed_slot_times(settings))
+    pretip = math.ceil(games_per_day * len(settings.pretip_offsets_min))
+    refresh = math.ceil(24 * 60 / max(1, settings.events_refresh_min))
+    total = fixed + pretip + refresh
+    return {"provider": settings.odds_provider, "fixed_and_interval_runs": fixed, "pretip_runs_upper_bound": pretip,
+            "events_refreshes_upper_bound": refresh, "requests_per_day_upper_bound": total,
+            "configured_daily_budget": settings.daily_request_budget,
+            "fits_daily_budget": total <= settings.daily_request_budget}

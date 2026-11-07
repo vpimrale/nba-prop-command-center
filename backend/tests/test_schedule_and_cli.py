@@ -50,7 +50,7 @@ def test_run_due_serves_each_slot_once_and_records_missed(engine, settings, prov
 
 
 def test_run_due_without_key_makes_no_calls(engine, settings, provider):
-    nokey = Settings(database_url=settings.database_url, odds_api_key=Secret(None))
+    nokey = Settings(database_url=settings.database_url, odds_provider="the-odds-api", bookmakers=settings.bookmakers, odds_api_key=Secret(None))
     s = run_due(engine, nokey, now=NOW, transport=provider.transport())
     assert s["status"] == "blocked_no_key" and provider.requests == []
 
@@ -70,7 +70,7 @@ def test_cli_end_to_end_over_real_http(tmp_path, provider):
     try:
         db = tmp_path / "cli.sqlite3"
         key = "cli-dummy-key-not-real-1234"
-        env = {**os.environ, "NBA_EDGE_DATABASE_URL": f"sqlite:///{db}", "ODDS_API_KEY": key, "ODDS_API_BASE_URL": base,
+        env = {**os.environ, "NBA_EDGE_DATABASE_URL": f"sqlite:///{db}", "ODDS_PROVIDER": "the-odds-api", "ODDS_API_KEY": key, "ODDS_API_BASE_URL": base,
                "ODDS_API_MARKETS": "player_points,player_rebounds", "ODDS_MONTHLY_CREDIT_BUDGET": "1000", "PYTHONPATH": BACKEND}
         r = _cli(["snapshot"], env)
         assert r.returncode == 0, r.stderr

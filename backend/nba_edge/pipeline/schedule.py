@@ -24,8 +24,7 @@ from sqlalchemy.engine import Engine
 
 from ..config import Settings
 from ..db.schema import games, job_runs, slot_completions, utcnow
-from ..odds.normalize import PROVIDER
-from .snapshots import make_client, refresh_events, run_snapshot
+from .snapshots import open_provider, refresh_events, run_snapshot
 
 ET = ZoneInfo("America/New_York")
 log = logging.getLogger(__name__)
@@ -40,11 +39,25 @@ class Slot:
     event_ids: tuple[str, ...]  # games this slot covers
 
 
+def fixed_slot_times(settings: Settings) -> list[str]:
+    """Configured fixed slots, plus every `snapshot_interval_min` between interval start/end
+    (ET) when set — useful on PropLine, where a whole-slate snapshot is ~1 request."""
+    times = set(settings.fixed_slots_et)
+    if settings.snapshot_interval_min:
+        sh, sm = (int(x) for x in settings.interval_start_et.split(":"))
+        eh, em = (int(x) for x in settings.interval_end_et.split(":"))
+        t, end = sh * 60 + sm, eh * 60 + em
+        while t <= end:
+            times.add(f"{t // 60:02d}:{t % 60:02d}")
+            t += settings.snapshot_interval_min
+    return sorted(times)
+
+
 def plan_slots(game_rows: list[dict], day: date, settings: Settings) -> list[Slot]:
     day_games = [g for g in game_rows if g["game_date_et"] == day.isoformat()]
     slots: list[Slot] = []
     grace = timedelta(minutes=settings.slot_grace_min)
-    for hhmm in settings.fixed_slots_et:
+    for hhmm in fixed_slot_times(settings):
         hh, mm = (int(x) for x in hhmm.split(":"))
         due = datetime.combine(day, time(hh, mm), ET).astimezone(timezone.utc)
         covered = tuple(g["provider_event_id"] for g in day_games if g["commence_time"] > due)
@@ -68,9 +81,9 @@ def missed_slots(slots: list[Slot], now: datetime, done: set[str]) -> list[Slot]
     return [s for s in slots if s.key not in done and s.deadline <= now]
 
 
-def _games_for(engine: Engine, day: date) -> list[dict]:
+def _games_for(engine: Engine, day: date, provider: str) -> list[dict]:
     with engine.connect() as conn:
-        rows = conn.execute(select(games).where(and_(games.c.provider == PROVIDER, games.c.game_date_et == day.isoformat())))
+        rows = conn.execute(select(games).where(and_(games.c.provider == provider, games.c.game_date_et == day.isoformat())))
         return [dict(r._mapping) for r in rows]
 
 
@@ -79,30 +92,32 @@ def _done_keys(engine: Engine, prefix: str) -> set[str]:
         return {r[0] for r in conn.execute(select(slot_completions.c.slot_key).where(slot_completions.c.slot_key.like(prefix + "%")))}
 
 
-def _events_fresh(engine: Engine, now: datetime, settings: Settings) -> bool:
+def _events_fresh(engine: Engine, now: datetime, settings: Settings, provider: str) -> bool:
     with engine.connect() as conn:
-        last_ok = conn.execute(select(job_runs.c.finished_at).where(and_(job_runs.c.job_name == "refresh_events", job_runs.c.status == "ok"))
+        last_ok = conn.execute(select(job_runs.c.finished_at).where(and_(job_runs.c.job_name == f"refresh_events:{provider}", job_runs.c.status == "ok"))
                                .order_by(job_runs.c.finished_at.desc()).limit(1)).scalar()
     return bool(last_ok) and (now - last_ok) < timedelta(minutes=settings.events_refresh_min)
 
 
 def run_due(engine: Engine, settings: Settings, *, now: datetime | None = None, transport=None, sleep=None) -> dict:
     """One scheduler tick. Returns a summary dict (also safe to print)."""
+    simulated = now is not None
     now = now or utcnow()
     t0 = _time.monotonic()
     day = now.astimezone(ET).date()
     summary: dict = {"now": now.isoformat(), "day_et": day.isoformat(), "runs": [], "missed": []}
     with engine.begin() as conn:
         tick_id = conn.execute(insert(job_runs).values(job_name="scheduler_tick", started_at=now, status="running")).inserted_primary_key[0]
-    client, recorder = make_client(settings, engine, transport=transport, sleep=sleep)
+    client, recorder = open_provider(settings, engine, transport=transport, sleep=sleep, clock=(lambda: now) if simulated else utcnow)
+    summary["provider"] = client.name
     try:
-        if not settings.odds_api_key:
+        if not client.has_credentials():
             summary["status"] = "blocked_no_key"
-            summary["detail"] = "ODDS_API_KEY is not set — no provider calls made."
+            summary["detail"] = f"No API key configured for {client.name} — no provider calls made."
         else:
-            if not _events_fresh(engine, now, settings):
+            if not _events_fresh(engine, now, settings, client.name):
                 summary["events_refresh"] = refresh_events(engine, client, now)
-            slots = plan_slots(_games_for(engine, day), day, settings)
+            slots = plan_slots(_games_for(engine, day, client.name), day, settings)
             done = _done_keys(engine, day.isoformat())
             for s in missed_slots(slots, now, done):
                 with engine.begin() as conn:
@@ -117,7 +132,7 @@ def run_due(engine: Engine, settings: Settings, *, now: datetime | None = None, 
                 if not group:
                     continue
                 ids = [e for e in sorted({e for s in group for e in s.event_ids}) if e not in fetched_by]
-                live_ids = _still_pregame(engine, ids, now)
+                live_ids = _still_pregame(engine, ids, now, client.name)
                 if not live_ids:
                     # Every event was already captured earlier in this same tick (or has tipped
                     # off): the slot is served by that capture — no second paid call.
@@ -146,10 +161,10 @@ def run_due(engine: Engine, settings: Settings, *, now: datetime | None = None, 
     return summary
 
 
-def _still_pregame(engine: Engine, ids: list[str], now: datetime) -> list[str]:
+def _still_pregame(engine: Engine, ids: list[str], now: datetime, provider: str) -> list[str]:
     if not ids:
         return []
     with engine.connect() as conn:
-        rows = conn.execute(select(games.c.provider_event_id).where(and_(games.c.provider == PROVIDER,
+        rows = conn.execute(select(games.c.provider_event_id).where(and_(games.c.provider == provider,
                             games.c.provider_event_id.in_(ids), games.c.commence_time > now)).order_by(games.c.commence_time))
         return [r[0] for r in rows]

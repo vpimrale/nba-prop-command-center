@@ -57,6 +57,13 @@ class Quote:
     decimal_odds: float
     book_last_update: datetime | None
     market_last_update: datetime | None
+    # Optional provenance fields (populated by providers that expose them, e.g. PropLine)
+    provider_player_id: str | None = None   # e.g. "nba:<personId>" (NBA CDN personId)
+    line_type: str | None = None            # main | alternate | milestone (provider's own label)
+    outcome_label: str | None = None        # original outcome name, e.g. "10+ Points"
+    source_seen_at: datetime | None = None  # provider's last sighting of this outcome
+    source_changed_at: datetime | None = None  # provider's last observed price change
+    stale: bool = False                     # provider data older than the freshness threshold
 
     @property
     def key(self) -> str:
@@ -68,6 +75,8 @@ class NormalizeResult:
     quotes: list[Quote]
     skipped: int
     bookmakers_seen: set[str]
+    stale: int = 0                 # quotes flagged stale (stored, but marked)
+    excluded: dict | None = None   # reason -> count for outcomes deliberately not stored
 
 
 def normalize_event_odds(payload: dict, *, provider: str = PROVIDER) -> NormalizeResult:

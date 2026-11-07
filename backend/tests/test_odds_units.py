@@ -51,7 +51,7 @@ def test_normalize_flattens_quotes_and_skips_unusable_outcomes():
 
 
 def test_budget_estimates_are_upper_bounds_from_config():
-    s = Settings(bookmakers=("fanduel", "fanatics"))
+    s = Settings(odds_provider="the-odds-api", bookmakers=("fanduel", "fanatics"))
     assert estimate_event_call_cost(s) == 22  # 22 markets x 1 region-unit (<=10 books)
     m = estimate_month(s, games_per_day=7.5, snapshots_per_game=4, days=30)
     assert m["estimated_credits_upper_bound"] == 19_800

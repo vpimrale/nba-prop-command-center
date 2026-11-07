@@ -47,8 +47,23 @@ for key, code in _BASE:
 DEFAULT_MARKET_KEYS: tuple[str, ...] = tuple(MARKETS.keys())
 
 
+# Suffixes a provider adapter may append for non-main line types (see providers/propline.py:
+# PropLine "milestone" ladders like "10+ Points" are stored as `<base>_milestone`).
+VARIANT_SUFFIXES = ("_alternate", "_milestone")
+
+
+def base_market_key(key: str) -> str:
+    for suf in VARIANT_SUFFIXES:
+        if key.endswith(suf):
+            return key[: -len(suf)]
+    return key
+
+
 def market_info(key: str) -> Market:
     """Known market, or a best-effort description of an unknown one (never dropped)."""
     if key in MARKETS:
         return MARKETS[key]
-    return Market(key, "", key.endswith("_alternate"))
+    base = base_market_key(key)
+    if base != key and base in MARKETS:
+        return Market(key, MARKETS[base].code, True)
+    return Market(key, "", key.endswith(VARIANT_SUFFIXES))

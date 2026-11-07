@@ -1,6 +1,6 @@
 # NBA Prop Command Center — architecture
 
-_Last updated 2026-11-07 (Stage 0 + Stage 1). Status markers: **built+tested** = exists
+_Last updated 2026-11-07 (Stage 0, Stage 1, free odds source). Status markers: **built+tested** = exists
 and covered by automated tests (synthetic data); **designed** = schema/plan only;
 **not started**._
 
@@ -14,7 +14,10 @@ and covered by automated tests (synthetic data); **designed** = schema/plan only
  └──────────────────────────────────────────────────────────────────────────────────────┘
                      (Stage 5: reads a read-only JSON API — not started)
  ┌───────────────────────────── backend/ (Python 3.11+) ───────────────────────────────┐
- │ nba_edge.odds      The Odds API client · normalization · odds math   built+tested    │
+ │ nba_edge.providers source adapters behind one interface:             built+tested    │
+ │                    propline (FREE, default — verified live) ·                        │
+ │                    the-odds-api (paid, optional — not live-verified)                 │
+ │ nba_edge.odds      shared client errors · normalization · odds math  built+tested    │
  │ nba_edge.pipeline  snapshot capture · scheduler · credit budget      built+tested    │
  │ nba_edge.queries   status/job health · coverage · closing lines      built+tested    │
  │ nba_edge.db        SQLAlchemy Core schema (SQLite ⇄ Postgres)        built+tested    │
@@ -24,6 +27,16 @@ and covered by automated tests (synthetic data); **designed** = schema/plan only
 ```
 
 The tracker does not depend on the backend; it keeps working with no backend at all.
+
+## 2a. Odds sources (provider adapters)
+
+The engine (snapshots, diffing, budget, scheduler, queries) only talks to
+`providers.base.OddsProvider`: `list_events`, `fetch_odds(event_ids, max_units)`,
+`estimate_units`, `market_in_scope`, `budget_window` (`day` or `month`). Adding a source,
+free or paid, means one new adapter module plus a registry line; no engine changes. Each
+row's `provider` column keeps sources separate. See `docs/ODDS_SOURCES.md` for the free
+source audit. PropLine was chosen because it is the only free source verified to carry
+both FanDuel and Fanatics NBA props, and one bulk request snapshots a whole slate.
 
 ## 2. Odds snapshot data model (Stage 1)
 
@@ -87,7 +100,8 @@ cron (which can start many minutes late) is not recommended.
 | Stage | Scope | State |
 |---|---|---|
 | 0 | settlement fix, persisted results, test suite, pinned OCR | done |
-| 1 | backend, DB, odds snapshot pipeline, scheduler, job health | built + tested with synthetic data; **live verification blocked on key + network** |
+| 1 | backend, DB, odds snapshot pipeline, scheduler, job health | built + tested; **live-verified on PropLine free tier** (FanDuel + Fanatics) |
+| 1b | provider abstraction; PropLine adapter (bulk + fallback, milestones, stale/suspended/withdrawn handling, burst vs daily limits) | done; live-verified |
 | 2 | schedule/rosters/game logs; official NBA injury report PDFs; starting lineups confirmed at tip-off; player→team resolution for snapshots | not started |
 | 3 | minutes + production projections with shrinkage; Monte Carlo distributions; projection-accuracy validation on box scores | not started |
 | 4 | vig removal, fair odds, EV, uncertainty-aware thresholds, NO BET default | not started |
