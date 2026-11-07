@@ -1,7 +1,10 @@
 'use strict';
 /* global NBA_TEAMS, parseBetSlipText, evaluateTeamBet, evaluateParlay, evaluatePropLeg, componentsForMarket, marketLabel, rawStat,
    americanOddsToDecimal, estimateGrossPayout, settleStep, computeLadderBalance, totalRealizedPL, amountNeededForGoal,
-   progressPct, suggestedNextStake, deriveLadderStatus, ARCHIVE_DELAY_MS, computeFinalizedAt, isArchived, minutesRemaining */
+   progressPct, suggestedNextStake, deriveLadderStatus, ARCHIVE_DELAY_MS, computeFinalizedAt, isArchived, minutesRemaining,
+   canonicalTeam, sameTeam, etDateString, etDateParam, gameFromScoreboardEvent, gameFromSummary, gameInvolves,
+   candidateGamesForSelection, bindingFor, shouldPersistSettlement, buildSettlement, evaluateFromSettlement,
+   identityChanged, clearBinding */
 
 const API_SCOREBOARD = 'https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard';
 const API_SUMMARY = 'https://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary?event=';
@@ -11,12 +14,10 @@ const API_ROSTER = abbr => `https://site.api.espn.com/apis/site/v2/sports/basket
 // rolls over, even though it's well within the last 24 real hours. To cover "games
 // finished in the past 24 hours" properly, every refresh fetches TWO calendar days —
 // today's and yesterday's, via ESPN's own `dates=YYYYMMDD` param — and merges them.
-const dateParam = offsetDays => {
-  const d = new Date();
-  d.setDate(d.getDate() + offsetDays);
-  return d.getFullYear() + String(d.getMonth() + 1).padStart(2, '0') + String(d.getDate()).padStart(2, '0');
-};
-const scoreboardUrl = offsetDays => `${API_SCOREBOARD}?dates=${dateParam(offsetDays)}`;
+// v6.1: the calendar day is the US-EASTERN day (the NBA's/ESPN's schedule day), not
+// this device's local day — a West-Coast device late at night previously asked for
+// the wrong day (see game-binding.js etDateParam()).
+const scoreboardUrl = offsetDays => `${API_SCOREBOARD}?dates=${etDateParam(Date.now(), offsetDays)}`;
 // A finished game has no explicit "ended at" timestamp in this feed, only a start
 // time + status. 30 hours past tipoff is used as a generous stand-in for "already
 // over and well past the 24-hour window we care about" (an NBA game plus any
@@ -26,8 +27,8 @@ const scoreboardUrl = offsetDays => `${API_SCOREBOARD}?dates=${dateParam(offsetD
 const RECENT_FINAL_WINDOW_MS = 30 * 60 * 60 * 1000;
 const STORAGE_KEY = 'nbaCC.v5';
 const LEGACY_STORAGE_KEYS = ['nbaCC.v4', 'nbaCC.v3']; // read-only fallback for migration, newest first
-const SCHEMA_VERSION = 4; // v6: + playerId (canonical athlete id), History management, Settings/preferences
-const APP_VERSION = 'v6.0.0';
+const SCHEMA_VERSION = 5; // v6.1: + per-selection game binding (gameId/gameDate/gameStart) + persisted settlement
+const APP_VERSION = 'v6.1.0';
 const ROSTER_KEY = 'nbaCC.rosterCache.v2';
 const ROSTER_MAX_AGE_MS = 12 * 60 * 60 * 1000; // 12 hours
 
@@ -60,7 +61,27 @@ function migrateSelection(sel) {
   if (sel.finalizedAt === undefined) sel.finalizedAt = null;  // v5: persisted 30-min-archival timestamp
   if (sel.manualStatus === undefined) sel.manualStatus = null; // v5: manual settlement correction override
   if (sel.playerId === undefined) sel.playerId = null; // v6: canonical ESPN athlete id when resolved via autocomplete
+  migrateBindingFields(sel);
   return sel;
+}
+// v6.1 (schema 5): every selection — straight bet OR parlay leg — carries its own game
+// binding and, once final, its own persisted settlement (see game-binding.js). Records
+// from older versions get empty bindings: they are matched afresh, but ONLY against a
+// game inside the plausibility window around their createdAt, never a newer game.
+function migrateBindingFields(sel) {
+  if (sel.gameId === undefined) sel.gameId = null;
+  if (sel.gameDate === undefined) sel.gameDate = null;
+  if (sel.gameStart === undefined) sel.gameStart = null;
+  if (sel.boundAt === undefined) sel.boundAt = null;
+  if (sel.settlement === undefined) sel.settlement = null;
+  if (sel.gameDateHint === undefined) sel.gameDateHint = null; // optional user-supplied ET game date (YYYY-MM-DD)
+  return sel;
+}
+function migrateLeg(l, parentCreatedAt) {
+  l.voided = l.voided ?? false; l.odds = l.odds ?? null; l.playerId = l.playerId ?? null;
+  // A leg's plausibility window is anchored to when its ticket was recorded.
+  if (l.createdAt === undefined || l.createdAt === null) l.createdAt = parentCreatedAt ?? null;
+  return migrateBindingFields(l);
 }
 function migrateLadder(l) {
   if (l.allOrNothing === undefined) l.allOrNothing = true;
@@ -79,7 +100,7 @@ function buildStateFromRaw(raw) {
   const straightBets = (raw.straightBets || []).map(migrateSelection);
   // Only straight bets and whole parlay tickets carry a ladder link / finalizedAt / manualStatus — legs don't
   // (a ladder step is linked to the ticket, never to one leg of a parlay).
-  const parlays = (raw.parlays || []).map(p => migrateSelection({ ...p, legs: (p.legs || []).map(l => { l.voided = l.voided ?? false; l.odds = l.odds ?? null; l.playerId = l.playerId ?? null; return l; }) }));
+  const parlays = (raw.parlays || []).map(p => migrateSelection({ ...p, legs: (p.legs || []).map(l => migrateLeg(l, p.createdAt)) }));
   const ladders = (raw.ladders || []).map(migrateLadder);
   return { schemaVersion: SCHEMA_VERSION, straightBets, parlays, ladders, auditLog: raw.auditLog || [], oddsHistory: raw.oddsHistory || {} };
 }
@@ -263,15 +284,18 @@ function teamTotals(players) {
 }
 
 function needsBoxScoreForTrackedBet(gameEventId, homeAbbr, awayAbbr) {
-  // True if some tracked PLAYER prop could belong to this game.
+  // True if some tracked, NOT-YET-SETTLED player prop could belong to this game. A prop
+  // whose result is already persisted (v6.1) never needs a live box score again, and a
+  // prop bound to a different game id can't belong to this one. Team codes are compared
+  // canonically, so an app code ("GSW") matches ESPN's ("GS").
   const propBets = [
     ...state.straightBets.filter(b => b.kind === 'prop'),
     ...state.parlays.flatMap(p => p.legs.filter(l => l.kind === 'prop')),
-  ];
+  ].filter(p => !p.voided && !p.settlement);
   return propBets.some(p => {
+    if (p.gameId) return String(p.gameId) === String(gameEventId);
     if (!p.team) return true; // no team given — can't pre-filter, so check everywhere
-    const t = norm(p.team);
-    return t === norm(homeAbbr) || t === norm(awayAbbr);
+    return sameTeam(p.team, homeAbbr) || sameTeam(p.team, awayAbbr);
   });
 }
 // A game's box score is fetched when EITHER a tracked prop bet could belong to it
@@ -334,6 +358,54 @@ async function fetchScoreboardEvents() {
   return Array.from(seen.values());
 }
 
+// Adds the app's display-only fields to a parsed game (see game-binding.js for the core shape).
+function decorateGame(parsed) {
+  return {
+    ...parsed,
+    startTime: parsed.startTimestamp ? new Date(parsed.startTimestamp).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '',
+    dayLabel: dayLabelFor(parsed.startTimestamp),
+    players: [], teams: [parsed.home, parsed.away].filter(Boolean),
+    feedError: false,
+  };
+}
+
+// v6.1: a selection that is BOUND to a game (gameId) but not yet settled — e.g. the app
+// wasn't opened until that game had already dropped out of the today+yesterday scoreboard
+// — has its exact game loaded directly by event id from ESPN's per-event summary, so it
+// can still settle against the RIGHT game. These games are kept separately from `games`
+// (Game Center's list is unchanged) and are only ever used for their bound selections.
+const boundGameCache = new Map(); // gameId -> decorated game (with players)
+const BOUND_GAME_FETCH_LIMIT = 8;   // per refresh, to stay polite to the feed
+function unsettledBoundGameIds() {
+  const ids = new Set();
+  const consider = s => { if (s && s.gameId && !s.settlement && !s.voided) ids.add(String(s.gameId)); };
+  state.straightBets.forEach(consider);
+  state.parlays.forEach(p => p.legs.forEach(consider));
+  return [...ids];
+}
+async function loadBoundGamesOutsideFeed() {
+  const missing = unsettledBoundGameIds().filter(id => !games.some(g => String(g.id) === id));
+  for (const id of missing.slice(0, BOUND_GAME_FETCH_LIMIT)) {
+    const cached = boundGameCache.get(id);
+    if (cached && cached.state === 'post' && cached.completed !== false && cached.players.length) continue; // final — can't change
+    try {
+      const summary = await fetchJson(API_SUMMARY + encodeURIComponent(id));
+      const parsed = gameFromSummary(summary, id);
+      if (!parsed) continue;
+      const g = decorateGame(parsed);
+      g.players = extractAthletes(summary);
+      recordSeenPlayers(g.players);
+      boundGameCache.set(id, g);
+    } catch (e) { /* stays unsettled; retried on the next refresh */ }
+  }
+}
+// Every game the evaluator may use: the live scoreboard window plus bound games loaded by id.
+function knownGames() {
+  const out = [...games];
+  for (const [id, g] of boundGameCache) if (!games.some(x => String(x.id) === id)) out.push(g);
+  return out;
+}
+
 async function refresh() {
   if (busy) return;
   busy = true;
@@ -343,32 +415,17 @@ async function refresh() {
     const events = await fetchScoreboardEvents();
     const newGames = [];
     const results = await Promise.allSettled(events.map(async ev => {
-      const comp = ev.competitions?.[0];
-      if (!comp) return null;
-      const competitors = comp.competitors || [];
-      const home = competitors.find(c => c.homeAway === 'home'), away = competitors.find(c => c.homeAway === 'away');
-      const st = ev.status?.type || {};
-      const isHalftime = /halftime/i.test(st.description || '') || /halftime/i.test(st.name || '');
-      const homeAbbr = home?.team?.abbreviation || 'HOME', awayAbbr = away?.team?.abbreviation || 'AWAY';
-      const startTimestamp = ev.date ? new Date(ev.date).getTime() : null;
-      const gameState = isHalftime ? 'halftime' : (st.state || 'pre');
+      // Parsing is shared with the per-event summary path (game-binding.js), so a
+      // game loaded either way has exactly the same shape (incl. ESPN's `completed` flag).
+      const parsed = gameFromScoreboardEvent(ev);
+      if (!parsed) return null;
+      const { startTimestamp } = parsed;
+      const homeAbbr = parsed.home, awayAbbr = parsed.away;
       // A finished game from a day other than today is only relevant to Game Center
       // within the ~24-hour window this app cares about — anything older is dropped
       // here rather than shown as a stale "Final" card from days ago.
-      if (gameState === 'post' && startTimestamp && (Date.now() - startTimestamp) > RECENT_FINAL_WINDOW_MS) return null;
-      const g = {
-        id: ev.id,
-        home: homeAbbr, away: awayAbbr,
-        homeScore: home?.score ?? '0', awayScore: away?.score ?? '0',
-        state: gameState,
-        period: ev.status?.period || 0,
-        clock: ev.status?.displayClock || '',
-        startTime: ev.date ? new Date(ev.date).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '',
-        startTimestamp,
-        dayLabel: dayLabelFor(startTimestamp),
-        players: [], teams: [homeAbbr, awayAbbr].filter(Boolean),
-        feedError: false,
-      };
+      if (parsed.state === 'post' && startTimestamp && (Date.now() - startTimestamp) > RECENT_FINAL_WINDOW_MS) return null;
+      const g = decorateGame(parsed);
       // Finished games never change again, so a previously-fetched final box score is
       // reused instead of re-downloaded every 15-second tick (see finalBoxScoreCache).
       if (g.state === 'post' && finalBoxScoreCache.has(ev.id)) {
@@ -388,6 +445,7 @@ async function refresh() {
     // we're in the try branch) — per-game box-score failures are flagged (feedError) on
     // that single game rather than discarding everything.
     games = newGames;
+    await loadBoundGamesOutsideFeed();
     everSucceeded = true;
     lastSuccessAt = Date.now();
     $('lastUpdate').textContent = 'Updated ' + new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' });
@@ -440,20 +498,13 @@ if (typeof window !== 'undefined') {
   });
   window.addEventListener('offline', updateOnlineBanner);
 }
-function findGameByAbbr(abbr, opponentAbbr) {
-  if (!abbr) return null;
-  const candidates = games.filter(g => norm(g.home) === norm(abbr) || norm(g.away) === norm(abbr));
-  if (candidates.length <= 1) return candidates[0] || null;
-  if (opponentAbbr) {
-    const exact = candidates.find(g => norm(g.home) === norm(opponentAbbr) || norm(g.away) === norm(opponentAbbr));
-    if (exact) return exact;
-  }
-  return candidates[0];
-}
-
 // ---------------------------------------------------------------------------
-// Player-prop matching (carried over from v3, verified correct) — resolves a
-// prop selection to {g, a} = the specific game + athlete box-score row it refers to.
+// Player-prop matching — resolves a prop selection to {g, a} = the specific game +
+// athlete box-score row it refers to. v6.1: the search is restricted to the
+// selection's CANDIDATE games (game-binding.js candidateGamesForSelection): its bound
+// game if it has one, otherwise only games that tip off within the plausibility window
+// around when the bet was recorded (and against the stated opponent, if any). This is
+// what makes it impossible for an old bet to match a newer, unrelated game.
 // ---------------------------------------------------------------------------
 function namesMatch(target, candidate) {
   const pn = norm(target), an = norm(candidate);
@@ -463,9 +514,9 @@ function namesMatch(target, candidate) {
   const bits = target.toLowerCase().split(/\s+/).filter(x => x.length > 2);
   return bits.filter(x => candidate.toLowerCase().includes(x)).length >= 2;
 }
-function findPlayerInGames(p) {
+function findPlayerInGames(p, gameList) {
   const candidates = [];
-  for (const g of games) {
+  for (const g of gameList) {
     for (const a of (g.players || [])) {
       const pn = norm(p.player), an = norm(a.name);
       if (!pn || !an) continue;
@@ -478,10 +529,10 @@ function findPlayerInGames(p) {
         if (matches >= 2) score = matches * 20;
       }
       if (score <= 0) continue;
-      if (p.team && norm(p.team) !== norm(a.team)) score -= 35;
+      if (p.team && !sameTeam(p.team, a.team)) score -= 35;
       if (p.opponent && g.teams?.length) {
-        const other = g.teams.find(t => norm(t) !== norm(a.team));
-        if (other && norm(p.opponent) !== norm(other)) score -= 15;
+        const other = g.teams.find(t => !sameTeam(t, a.team));
+        if (other && !sameTeam(p.opponent, other)) score -= 15;
       }
       if (score > 0) candidates.push({ a, g, score });
     }
@@ -489,58 +540,113 @@ function findPlayerInGames(p) {
   candidates.sort((x, y) => y.score - x.score);
   return candidates[0] || null;
 }
-// Deterministic path: if a team was given, find THAT game first (same lookup team
-// bets use), then look for the athlete only within that game's own box score. Falls
-// back to the global fuzzy search when no team was given or that path comes up empty
-// (e.g. a typo'd team) — matching v3 behavior exactly in that case.
+// Returns { g, a, bindable }. `bindable` = this match is specific enough to permanently
+// bind the selection to `g` (an athlete was found in it, or the bet named its team).
 function resolvePropSelection(sel) {
-  // A selection picked from autocomplete carries a canonical ESPN athlete id —
-  // try that FIRST, an exact match across every currently-loaded game, before
-  // falling back to fuzzy name matching (which is all a free-typed entry has).
+  const candidates = candidateGamesForSelection(sel, knownGames());
+  if (!candidates.length) return { g: null, a: null, bindable: false };
+  // 1. A selection picked from autocomplete carries a canonical ESPN athlete id — an
+  //    exact match, tried first (candidate games only, best-ranked first).
   if (sel.playerId) {
-    for (const g of games) {
+    for (const g of candidates) {
       const a = (g.players || []).find(p => p.espnId && String(p.espnId) === String(sel.playerId));
-      if (a) return { g, a };
+      if (a) return { g, a, bindable: true };
     }
   }
-  let g = null, a = null;
-  if (sel.team) {
-    g = findGameByAbbr(sel.team, sel.opponent);
-    if (g) a = (g.players || []).find(p => namesMatch(sel.player, p.name)) || null;
+  // 2. Name match within the candidate games, on the stated team when one was given.
+  for (const g of candidates) {
+    const a = (g.players || []).find(p => namesMatch(sel.player, p.name) && (!sel.team || sameTeam(sel.team, p.team)));
+    if (a) return { g, a, bindable: true };
   }
-  if (!g || !a) {
-    const found = findPlayerInGames(sel);
-    if (found) { g = g || found.g; a = a || found.a; }
-  }
-  return { g, a };
+  // 3. Fuzzy scoring across the candidate games (v3 behavior, now window-restricted).
+  const found = findPlayerInGames(sel, candidates);
+  if (found) return { g: found.g, a: found.a, bindable: true };
+  // 4. No athlete row yet (e.g. pre-game: no box score) — the bet's own team still
+  //    identifies its game, so it can show as "upcoming" and bind early.
+  if (sel.team) return { g: candidates[0], a: null, bindable: true };
+  return { g: null, a: null, bindable: false };
 }
 
 // ---------------------------------------------------------------------------
 // ONE shared evaluator for every selection — straight prop, straight team bet,
-// or a leg nested inside a parlay. This is the fix for the reported bug: a
-// parlay leg is evaluated by the exact same function, using the exact same
-// prop-status.js / settlement.js logic, as a straight bet.
+// or a leg nested inside a parlay. A parlay leg is evaluated by the exact same
+// function, using the exact same prop-status.js / settlement.js logic, as a
+// straight bet.
+//
+// v6.1: a selection with a PERSISTED settlement is evaluated from its saved
+// evidence only (final scores / final stat line of its bound game) — never from
+// the live feed — so it can't change when its game leaves the feed window, and
+// can never be re-settled against a different game. Unsettled selections are
+// evaluated live, restricted to their bound/candidate game(s).
 // ---------------------------------------------------------------------------
-function evaluateSelection(sel) {
-  if (sel.voided) return { status: 'void', current: null, g: null, a: null };
-  let ev;
+function gameFromSettlementRecord(st) {
+  const snap = st.snapshot || {};
+  const ts = st.gameStart ? Date.parse(st.gameStart) : null;
+  return {
+    id: st.gameId, home: snap.home, away: snap.away, homeScore: snap.homeScore, awayScore: snap.awayScore,
+    state: 'post', completed: true, startTimestamp: Number.isFinite(ts) ? ts : null, gameDate: st.gameDate,
+    dayLabel: dayLabelFor(Number.isFinite(ts) ? ts : null), teams: [snap.home, snap.away].filter(Boolean),
+    players: [], startTime: '', fromSettlement: true,
+  };
+}
+function evaluateLive(sel) {
   if (sel.kind === 'prop') {
-    const { g, a } = resolvePropSelection(sel);
+    const { g, a, bindable } = resolvePropSelection(sel);
     const gameState = g ? g.state : undefined; // no game found at all -> prop-status.js treats athleteStats=null as 'unmatched'
     const athleteStats = a ? a.stats : null;
     const r = evaluatePropLeg(sel, athleteStats, gameState);
-    ev = { ...r, g, a };
+    return { ...r, g, a, bindable };
+  }
+  const gi = candidateGamesForSelection(sel, knownGames())[0] || null;
+  // Team codes are canonicalized on both sides ("GSW" from autocomplete vs "GS" from ESPN).
+  const gameForSettlement = gi ? { state: gi.state, homeAbbr: canonicalTeam(gi.home), awayAbbr: canonicalTeam(gi.away), homeScore: gi.homeScore, awayScore: gi.awayScore } : null;
+  const r = evaluateTeamBet({ marketType: sel.marketType, team: canonicalTeam(sel.teamAbbr), direction: sel.direction, line: sel.line }, gameForSettlement);
+  return { ...r, g: gi, a: null, bindable: !!gi };
+}
+function evaluateSelection(sel) {
+  if (sel.voided) return { status: 'void', current: null, g: null, a: null };
+  let ev;
+  if (sel.settlement) {
+    const r = evaluateFromSettlement(sel, sel.settlement);
+    ev = { ...r, g: gameFromSettlementRecord(sel.settlement), a: sel.settlement.snapshot?.athlete || null, settled: true };
   } else {
-    const gi = findGameByAbbr(sel.teamAbbr, sel.oppAbbr) || findGameByAbbr(sel.oppAbbr, sel.teamAbbr);
-    const gameForSettlement = gi ? { state: gi.state, homeAbbr: gi.home, awayAbbr: gi.away, homeScore: gi.homeScore, awayScore: gi.awayScore } : null;
-    const r = evaluateTeamBet({ marketType: sel.marketType, team: sel.teamAbbr, direction: sel.direction, line: sel.line }, gameForSettlement);
-    ev = { ...r, g: gi || null, a: null };
+    ev = evaluateLive(sel);
   }
   // A manual settlement correction (Bet History tab) always overrides the computed
   // status — it keeps the live game/current-stat context for display, but the
   // status itself is whatever the user explicitly set, with an audit-log entry.
   if (sel.manualStatus) ev = { ...ev, status: sel.manualStatus, corrected: true };
   return ev;
+}
+
+// Binds + settles one selection (persisted on the selection itself). Returns true if
+// anything changed. Never rebinds a bound selection and never re-settles from the feed
+// once a settlement exists — a saved settlement's status is only ever re-derived from
+// its own saved evidence (so an edit to line/direction/market is still honored).
+function syncSelectionSettlement(sel, now) {
+  if (sel.voided) return false;
+  if (sel.settlement) {
+    const r = evaluateFromSettlement(sel, sel.settlement);
+    const cur = r.current ?? null;
+    if (r.status !== sel.settlement.status || cur !== sel.settlement.current) {
+      sel.settlement.status = r.status; sel.settlement.current = cur; sel.settlement.recomputedAt = now;
+      return true;
+    }
+    return false;
+  }
+  const ev = evaluateLive(sel);
+  let changed = false;
+  if (!sel.gameId && ev.bindable && ev.g && ev.g.id) { Object.assign(sel, bindingFor(ev.g, now)); changed = true; }
+  if (shouldPersistSettlement(sel, ev)) { sel.settlement = buildSettlement(sel, ev, now); changed = true; }
+  return changed;
+}
+function runSettlementSweep() {
+  const now = Date.now();
+  let changed = false;
+  const visit = sel => { if (syncSelectionSettlement(sel, now)) changed = true; };
+  state.straightBets.forEach(visit);
+  state.parlays.forEach(p => p.legs.forEach(visit));
+  if (changed) saveState();
 }
 // gameStates(): one game-state slot per game a ticket actually depends on, for the
 // 30-minute archival rule (archive.js). A manually-voided selection counts as its
@@ -622,7 +728,10 @@ function playerAvatarHtml(sel, a) {
 function renderSelectionCard(sel, opts = {}) {
   const ev = evaluateSelection(sel);
   const info = statusDisplay(ev);
-  const scoreLine = ev.g ? `${esc(ev.g.away)} ${esc(String(ev.g.awayScore))} — ${esc(ev.g.home)} ${esc(String(ev.g.homeScore))} · ${esc(gameClockLabel(ev.g))}` : (sel.game ? esc(sel.game) : 'Matchup not found yet');
+  // The matched game's day is shown whenever it isn't today, so it's always visible
+  // WHICH game a bet was judged against (v6.1 — never silently a different day's game).
+  const dayTag = ev.g && ev.g.dayLabel && ev.g.dayLabel !== 'Today' ? ` · ${esc(ev.g.dayLabel)}` : '';
+  const scoreLine = ev.g ? `${esc(ev.g.away)} ${esc(String(ev.g.awayScore))} — ${esc(ev.g.home)} ${esc(String(ev.g.homeScore))} · ${esc(gameClockLabel(ev.g))}${dayTag}` : (sel.game ? esc(sel.game) : 'Matchup not found yet');
   const removeBtn = opts.onRemove ? `<button type="button" class="danger" data-selaction="remove" style="padding:3px 9px;font-size:11px">Remove</button>` : '';
   // Void is a manual, user-driven override (e.g. the sportsbook voided the bet for a
   // reason our feed can't see — an injury scratch, a postponed game) and always wins
@@ -812,6 +921,10 @@ function selectionEditFields(sel) {
       { key: 'odds', label: 'Odds (American, optional)', value: sel.odds },
     ];
   }
+  // v6.1: optional explicit game date — only needed to disambiguate (e.g. a bet entered
+  // after the fact while the same team also plays again within a day). Changing it, or
+  // the player/team/opponent, re-matches the bet to a game from scratch.
+  fields.push({ key: 'gameDateHint', label: 'Game date (ET, optional)', type: 'date', value: sel.gameDateHint });
   if (isTopLevel) fields.push(
     { key: 'bookmaker', label: 'Bookmaker (optional)', value: sel.bookmaker },
     { key: 'stake', label: 'Stake (optional)', type: 'number', value: sel.stake },
@@ -820,7 +933,10 @@ function selectionEditFields(sel) {
   return fields;
 }
 function applySelectionEdit(sel, values) {
+  const before = { ...sel };
   if (sel.kind === 'prop') {
+    // A renamed player can no longer be trusted to be the same autocomplete-picked athlete.
+    if (String(values.player ?? '') !== String(sel.player ?? '')) sel.playerId = null;
     sel.player = values.player;
     sel.team = values.team ? String(values.team).toUpperCase() : null;
     sel.opponent = values.opponent ? String(values.opponent).toUpperCase() : null;
@@ -839,13 +955,21 @@ function applySelectionEdit(sel, values) {
   if ('bookmaker' in values) sel.bookmaker = values.bookmaker || null;
   if ('stake' in values) sel.stake = (values.stake === null || values.stake === undefined) ? null : Number(values.stake);
   if ('game' in values) sel.game = values.game || null;
+  if ('gameDateHint' in values) sel.gameDateHint = values.gameDateHint || null;
+  // Identity change (different player/team/opponent/game date) -> the old game binding and
+  // saved settlement no longer apply; the selection is matched afresh. A change to only the
+  // line/direction/market/odds keeps the binding, and a saved settlement re-derives its
+  // status from its own saved final stat line (see syncSelectionSettlement()).
+  if (identityChanged(before, sel)) clearBinding(sel);
 }
 function openSelectionEditModal(sel, afterChange) {
   const isTopLevel = !!sel.id;
   const before = { ...sel };
   openEditModal({
     title: isTopLevel ? 'Edit bet' : 'Edit parlay leg',
-    hint: 'Corrects the bet\'s own recorded facts (name, line, odds, stake…) — settlement will re-evaluate live from stats using whatever is on file after you save.',
+    hint: sel.settlement
+      ? `Already settled from the final box score of ${sel.settlement.gameDate || 'its game'}. Changing the line/direction/stat re-evaluates against that saved final stat line; changing the player/team/opponent/game date clears the saved result and re-matches the bet to a game.`
+      : 'Corrects the bet\'s own recorded facts (name, line, odds, stake…) — settlement will re-evaluate live from stats using whatever is on file after you save.',
     fields: selectionEditFields(sel),
     onSave: (values) => {
       applySelectionEdit(sel, values);
@@ -1257,8 +1381,9 @@ $('createParlayBtn').addEventListener('click', () => {
   const errEl = $('parlayErr'); errEl.style.display = 'none';
   const name = $('p-name').value.trim() || `Parlay ${new Date().toLocaleDateString()}`;
   if (pendingLegs.length < 2) { errEl.textContent = 'Add at least two legs to make a parlay.'; errEl.style.display = 'block'; return; }
+  const parlayCreatedAt = Date.now();
   state.parlays.push({
-    id: uid(), name, legs: pendingLegs, createdAt: Date.now(),
+    id: uid(), name, legs: pendingLegs.map(l => migrateLeg(l, parlayCreatedAt)), createdAt: parlayCreatedAt,
     combinedOdds: $('p-combined-odds').value.trim() || null,
     stake: $('p-stake').value ? Number($('p-stake').value) : null,
     potentialPayout: $('p-payout').value ? Number($('p-payout').value) : null,
@@ -1572,8 +1697,17 @@ function syncLadders() {
 // Every straight bet / leg gets a stable `_uid` (not persisted) purely so the shared
 // card renderer can bind its Remove/Void buttons without re-deriving an identity.
 function tagUids() {
-  state.straightBets.forEach(b => { b._uid = 'straight:' + b.id; });
-  state.parlays.forEach(p => p.legs.forEach(l => { l._uid = 'leg:' + p.id + ':' + l.legId; }));
+  state.straightBets.forEach(b => {
+    b._uid = 'straight:' + b.id;
+    if (b.gameId === undefined) migrateBindingFields(b); // bets added this session (forms, OCR import)
+  });
+  state.parlays.forEach(p => p.legs.forEach(l => {
+    l._uid = 'leg:' + p.id + ':' + l.legId;
+    // A leg's game-plausibility window is anchored to its ticket's creation time
+    // (covers legs added this session, e.g. via screenshot import, before any reload).
+    if (l.createdAt === undefined || l.createdAt === null) l.createdAt = p.createdAt ?? null;
+    if (l.gameId === undefined) migrateBindingFields(l);
+  }));
 }
 
 function runFinalizationSweep() {
@@ -1583,6 +1717,7 @@ function runFinalizationSweep() {
 }
 function renderAll() {
   tagUids();
+  runSettlementSweep(); // v6.1: bind + persist results BEFORE archival/ladder logic reads them
   runFinalizationSweep();
   syncLadders();
   renderOverview();
@@ -2274,12 +2409,31 @@ document.querySelectorAll('[data-histfilter]').forEach(btn => btn.addEventListen
   histFilter = btn.dataset.histfilter; renderHistory();
 }));
 $('histExportBtn').addEventListener('click', () => {
+  // v6.1: each row also carries WHICH game it was settled against (ESPN event id + ET
+  // game date), when it was settled, and whether the result is automatic or a manual
+  // correction — so an exported ledger can be audited and used for calibration.
+  const ladderName = t => t.ladderId ? (state.ladders.find(l => l.id === t.ladderId)?.name || '') : '';
+  const iso = ms => (ms ? new Date(ms).toISOString() : '');
+  const uniq = arr => [...new Set(arr.filter(Boolean))].join(' | ');
   const rows = [
-    ...state.straightBets.map(b => ({ type: 'Straight', label: selectionLabel(b), status: evaluateSelection(b).status, stake: b.stake, odds: b.odds, created: new Date(b.createdAt).toISOString(), ladder: b.ladderId ? (state.ladders.find(l => l.id === b.ladderId)?.name || '') : '' })),
-    ...state.parlays.map(p => ({ type: 'Parlay', label: `${p.name} (${p.legs.length} legs)`, status: parlayOverallStatus(p), stake: p.stake, odds: p.combinedOdds, created: new Date(p.createdAt).toISOString(), ladder: p.ladderId ? (state.ladders.find(l => l.id === p.ladderId)?.name || '') : '' })),
+    ...state.straightBets.map(b => ({
+      type: 'Straight', label: selectionLabel(b), status: evaluateSelection(b).status, stake: b.stake, odds: b.odds, created: iso(b.createdAt), ladder: ladderName(b),
+      gameId: b.settlement?.gameId || b.gameId || '', gameDate: b.settlement?.gameDate || b.gameDate || '', settledAt: iso(b.settlement?.settledAt),
+      source: b.manualStatus ? 'manual correction' : (b.settlement ? 'auto (final box score)' : ''),
+    })),
+    ...state.parlays.map(p => {
+      const legSettled = p.legs.filter(l => !l.voided).map(l => l.settlement?.settledAt).filter(Boolean);
+      const allSettled = p.legs.every(l => l.voided || l.settlement);
+      return {
+        type: 'Parlay', label: `${p.name} (${p.legs.length} legs)`, status: parlayOverallStatus(p), stake: p.stake, odds: p.combinedOdds, created: iso(p.createdAt), ladder: ladderName(p),
+        gameId: uniq(p.legs.map(l => l.settlement?.gameId || l.gameId)), gameDate: uniq(p.legs.map(l => l.settlement?.gameDate || l.gameDate)),
+        settledAt: allSettled && legSettled.length ? iso(Math.max(...legSettled)) : '',
+        source: p.manualStatus ? 'manual correction' : (allSettled ? 'auto (final box score)' : ''),
+      };
+    }),
   ];
-  const header = ['Type', 'Selection', 'Status', 'Stake', 'Odds', 'Created', 'Ladder'];
-  const csv = [header.join(',')].concat(rows.map(r => [r.type, r.label, r.status, r.stake ?? '', r.odds ?? '', r.created, r.ladder].map(v => `"${String(v).replace(/"/g, '""')}"`).join(','))).join('\n');
+  const header = ['Type', 'Selection', 'Status', 'Stake', 'Odds', 'Created', 'Ladder', 'Game ID', 'Game date (ET)', 'Settled at', 'Result source'];
+  const csv = [header.join(',')].concat(rows.map(r => [r.type, r.label, r.status, r.stake ?? '', r.odds ?? '', r.created, r.ladder, r.gameId, r.gameDate, r.settledAt, r.source].map(v => `"${String(v).replace(/"/g, '""')}"`).join(','))).join('\n');
   const blob = new Blob([csv], { type: 'text/csv' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -2334,7 +2488,7 @@ function validateBackupShape(parsed) {
 // THIS device are never overwritten by an incoming copy. Returns a plain-language summary.
 function mergeBackupIntoState(parsed) {
   const migratedBets = (parsed.straightBets || []).map(migrateSelection);
-  const migratedParlays = (parsed.parlays || []).map(p => migrateSelection({ ...p, legs: (p.legs || []).map(l => { l.voided = l.voided ?? false; l.odds = l.odds ?? null; l.playerId = l.playerId ?? null; return l; }) }));
+  const migratedParlays = (parsed.parlays || []).map(p => migrateSelection({ ...p, legs: (p.legs || []).map(l => migrateLeg(l, p.createdAt)) }));
   const migratedLadders = (parsed.ladders || []).map(migrateLadder);
   const incomingAudit = parsed.auditLog || [];
   const incomingOdds = parsed.oddsHistory || {};
@@ -2442,16 +2596,24 @@ function runDataIntegrityCheck() {
       issues.push(`${kind} "${label}" links to a step that no longer exists in ladder "${ladder.name}".`);
     }
   }
+  // v6.1: a saved settlement must belong to the game the selection is bound to.
+  function checkSettlementBinding(kind, label, s) {
+    if (!s.settlement) return;
+    if (!s.settlement.gameId) issues.push(`${kind} "${label}" has a saved result with no game id.`);
+    else if (s.gameId && String(s.settlement.gameId) !== String(s.gameId)) issues.push(`${kind} "${label}" has a saved result from game ${s.settlement.gameId} but is bound to game ${s.gameId}.`);
+  }
   state.straightBets.forEach((b, i) => {
     const label = b.player || b.teamAbbr || `#${i + 1}`;
     if (!b.id) issues.push(`A straight bet (${label}) is missing its id.`);
     checkTicketLadderLink('Straight bet', label, b);
+    checkSettlementBinding('Straight bet', label, b);
   });
   state.parlays.forEach((p, i) => {
     const label = p.name || `#${i + 1}`;
     if (!p.id) issues.push(`A parlay (${label}) is missing its id.`);
     if (!Array.isArray(p.legs) || !p.legs.length) issues.push(`Parlay "${label}" has no legs.`);
     checkTicketLadderLink('Parlay', label, p);
+    (p.legs || []).forEach((l, j) => checkSettlementBinding('Parlay leg', `${label} #${j + 1}`, l));
   });
   state.ladders.forEach(l => {
     if (!l.id) issues.push(`A ladder ("${l.name}") is missing its id.`);
@@ -2506,17 +2668,22 @@ $('settingsIntegrityBtn') && $('settingsIntegrityBtn').addEventListener('click',
 });
 
 // ---------------------------------------------------------------------------
-// Screenshot import (OCR) — Tesseract.js loaded lazily from CDN on first use
+// Screenshot import (OCR) — Tesseract.js loaded lazily on first use.
+// v6.1: the main bundle is a PINNED, vendored copy of tesseract.js 5.1.1 (see
+// vendor/tesseract.js-5.1.1/VENDOR.md for provenance + hashes) instead of the old
+// floating `@5` CDN URL. Its worker/WASM/language files still come from jsDelivr, at
+// exact versions derived from this build (not floating) — OCR still needs a connection.
 // ---------------------------------------------------------------------------
+const TESSERACT_SCRIPT_PATH = 'vendor/tesseract.js-5.1.1/tesseract.min.js';
 let tesseractLoadPromise = null;
 function loadTesseract() {
   if (window.Tesseract) return Promise.resolve();
   if (tesseractLoadPromise) return tesseractLoadPromise;
   tesseractLoadPromise = new Promise((resolve, reject) => {
     const s = document.createElement('script');
-    s.src = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
+    s.src = TESSERACT_SCRIPT_PATH;
     s.onload = resolve;
-    s.onerror = () => reject(new Error('Could not load the OCR library (no internet connection, or the CDN is blocked).'));
+    s.onerror = () => { tesseractLoadPromise = null; reject(new Error('Could not load the OCR library file (' + TESSERACT_SCRIPT_PATH + ').')); };
     document.head.appendChild(s);
   });
   return tesseractLoadPromise;

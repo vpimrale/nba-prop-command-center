@@ -16,6 +16,56 @@ For iPhone-specific setup, see the separate file IPHONE-INSTRUCTIONS.txt
 included in this same folder — this README focuses on Windows/desktop,
 what changed, and the honest test results.
 
+(The research/odds backend that is being built alongside this tracker lives in
+backend/ and is documented in docs/ARCHITECTURE.md and backend/README.md. The
+tracker below does not depend on it and works exactly as before without it.)
+
+
+0. v6.1 — SETTLEMENT FIX, PERSISTED RESULTS, REBUILT TESTS, PINNED OCR
+================================================================
+  A. BUG FIXED: OLD BETS COULD BE SETTLED AGAINST A NEWER, UNRELATED GAME.
+     Results were never saved — every screen refresh re-judged every bet
+     against whatever game the live feed (today + yesterday only) currently
+     had for that team/player, with no date check. Reproduced: a 3-day-old
+     "BOS vs MIA" prop showed WON from today's unrelated BOS vs NYK box score.
+     Bets whose game had left the feed fell back to "Needs review".
+     Now (see game-binding.js):
+       - A bet only ever matches a game that tips off within 30 hours
+         before/after the moment it was recorded (or on the optional "Game
+         date (ET)" you can set in its Edit dialog). An opponent, if entered,
+         is a hard requirement.
+       - The first match BINDS the bet to that exact game (ESPN event id, ET
+         game date, tip-off time saved on the bet). It is never re-matched.
+       - When that game is final, the result is SAVED on the bet with the
+         evidence (final score / the player's final stat line), the game id
+         and date, and a settledAt timestamp. It no longer depends on the live
+         feed: it survives reloads, the game leaving the feed, and backup
+         export/import. Parlay legs work the same way, leg by leg.
+       - A bound bet whose game has already left the scoreboard is settled by
+         loading that exact game directly from ESPN by its event id.
+       - Editing a settled bet's line/direction/stat re-judges it from the
+         saved final stat line; editing its player/team/opponent/game date
+         clears the saved result and matches it afresh.
+     Old bets saved by v6.0 have no saved results. They are matched only
+     inside their own window, so one that can no longer be matched shows
+     "Needs review" (use "Correct result…" in Bet History) instead of a wrong
+     result. Nothing is deleted.
+  B. Team codes from autocomplete (GSW, NYK, SAS, NOP, UTA, WAS) are now
+     matched to ESPN's own codes (GS, NY, SA, NO, UTAH, WSH). Previously a
+     bet entered as "GSW" could not match ESPN's "GS".
+  C. ESPN's scoreboard is now requested for the US-Eastern calendar day (the
+     NBA's schedule day), not this device's local day.
+  D. History CSV export adds: Game ID, Game date (ET), Settled at, Result
+     source (auto from final box score, or manual correction).
+  E. OCR library pinned: tesseract.js 5.1.1 is vendored in
+     vendor/tesseract.js-5.1.1/ (hash-checked by a test) instead of a
+     floating "@5" CDN link. See that folder's VENDOR.md. OCR still needs an
+     internet connection for its worker/language files (exact versions).
+  F. Test suite rebuilt (the tests/ folder described in section 7 below was
+     not actually present in the repository). See section 7.
+  G. Data schema 4 -> 5 (same storage key nbaCC.v5); new fields are
+     backfilled automatically, nothing is removed.
+
 
 1. WHAT'S NEW / FIXED IN v6 — PLAIN-ENGLISH SUMMARY
 ================================================================
@@ -390,181 +440,71 @@ a final score can't change anymore.
   status would show "Save failed") rather than to crash.
 
 
-7. TESTS ACTUALLY RUN, AND WHAT THEY PROVE
+7. TESTS — WHAT EXISTS AND WHAT IT PROVES (rewritten in v6.1)
 ================================================================
-Run with: node tests/<file>.js  (from inside the unzipped folder)
+The v6.0 version of this section listed 21 test files under tests/ and a
+v5-backup-before-v6-changes/ folder. Neither was present in the repository, so
+those claims could not be checked. v6.1 rebuilt a test suite from scratch.
 
-ALL 21 test files pass. Full list and what each one proves:
+Run (Node 20+; browser tests need Playwright with Chromium installed):
+    npm run test:unit      # pure logic, no browser, no network
+    npm run test:browser   # real app in headless Chromium
+    npm test               # both
+    npm run check          # node --check on every top-level .js file
 
-  test_line_rules.js (pure logic) — the shared Over/Under push rule for
-    whole-number vs half-point lines, both directions, including the
-    exact-threshold case, and the helper-text wording.
+All network responses in the browser tests are SYNTHETIC (mocked ESPN feed
+built in tests/browser/harness.js). They prove the app's own logic against the
+data shapes ESPN is documented to return; they are not a live-game check. The
+app is served from a throwaway local HTTP server during tests.
 
-  test_archive.js (pure logic) — 30-minute archival timing to the second,
-    a finalized timestamp that's stable on re-check, and — the specific
-    bug found and fixed this session — a ticket's finalized timestamp NO
-    LONGER gets silently wiped if its game looks briefly unmatched right
-    after a page reload (which happens on every reload, before this
-    session's own live-game list has been refetched). This was a real,
-    previously-undetected bug: archival could silently fail to survive a
-    reload. It's fixed and directly tested here.
+tests/unit/game-binding.test.js — the v6.1 fix: a 3-day-old bet sees no
+  candidate games; a bound bet only ever sees its bound game; settlement is
+  never saved from a different game; the 30h window edges; back-to-back
+  ranking; opponent as a hard constraint; explicit game date; team-code
+  aliases (GS/GSW, NY/NYK, ...); US-Eastern dates incl. month rollover;
+  settlement record contents and re-judging from saved evidence; no
+  settlement while live/postponed/unmatched/voided; ESPN payload parsing.
+tests/unit/core-logic.test.js — line push rules, prop combos and statuses,
+  team markets (totals/spread/moneyline incl. pushes), parlay aggregation,
+  ladder math, 30-minute archival, bet-slip OCR text parsing, team list.
+tests/unit/vendor-integrity.test.js — the vendored OCR bundle's sha256; that
+  app.js never loads a floating CDN copy; the service worker caches every
+  script the page loads.
+tests/browser/settlement-regression.test.js — in the real app: old bets and
+  old parlay legs stay "Needs review" instead of settling from today's game;
+  a settled result is saved with game id / ET date / settledAt and survives a
+  reload after its game leaves the feed AND a newer same-team game appears;
+  a bound bet outside the scoreboard window settles from its own game loaded
+  by event id; GSW/GS matching; editing a settled bet; ladder accounting
+  after reload; CSV export columns.
+tests/browser/core-flows.test.js — schema-4 data migrates with nothing lost;
+  adding a straight bet and a parlay through the forms; backup export and
+  Merge import (no duplicates); data-integrity check; Game Center box score;
+  the vendored OCR bundle loads without any CDN request for the library.
+tests/browser/app-behaviors.test.js — save-status indicator; offline banner;
+  only archived tickets removable from History with ladder accounting
+  untouched; status colors (live target-reached is never the win color);
+  team autocomplete aliases.
 
-  test_prop_status.js, test_settlement.js, test_parse.js, test_parse2.js
-    (pure logic, unchanged from v5) — the shared live-stat evaluation
-    engine, team-bet settlement, and bet-slip OCR text parsing all still
-    work exactly as before.
+NOT covered by automated tests (unchanged limitations): live behavior against
+the real ESPN feed during a real game; iOS "Add to Home Screen" / Share-sheet
+flows; real OCR recognition of a screenshot (needs the CDN worker + WASM);
+the 15-second refresh cadence and tab-visibility pausing.
 
-  test_ladder.js (pure logic, unchanged from v5) — odds-to-decimal
-    conversion, gross-payout-vs-net-profit math, balance only moving on
-    settled steps, status derivation.
-
-  test_autocomplete.js (real Chromium browser, MOCKED ESPN) — all the
-    spec's own team-alias examples resolve correctly (LAL/Lakers/Los
-    Angeles Lakers; GS or GSW/Warriors/Golden State Warriors; NYK/Knicks/
-    New York Knicks); the exact reported bug (a player seen live but
-    missing from autocomplete when the roster feed fails) is fixed and
-    directly reproduced-then-fixed in this test; partial first/last-name
-    matching; no duplicate entries when a player exists in both the
-    roster index and the seen-players cache; picking a suggestion stashes
-    the real ESPN athlete ID on the form.
-
-  test_history_management.js (real Chromium browser, MOCKED ESPN) — an
-    active ticket never gets a removal checkbox; an archived ticket does;
-    removing it actually deletes it from storage while leaving an active
-    ticket untouched; the linked ladder's balance/result/net-profit are
-    completely unchanged after the removal; the ladder step shows a saved
-    label snapshot instead of "ticket no longer exists"; "Clear All
-    History" with nothing archived says so plainly.
-
-  test_persistence.js (real Chromium browser) — the save-status indicator
-    accurately shows "Saved locally" after a real successful save; a
-    simulated storage-full error is shown to the user, never swallowed;
-    the IndexedDB backup mirror is actually written on every save and
-    correctly recovers a wiped localStorage key, restoring the exact same
-    records and writing them back to localStorage — and never overwrites
-    real data that's already present.
-
-  test_offline.js (real Chromium browser) — the offline banner reflects
-    the browser's real connectivity signal, explicitly reassures that
-    saved bets are safe, explicitly says this is NOT cross-device sync; a
-    new bet entered while offline is genuinely persisted, not just held
-    in memory; coming back online triggers an immediate refresh.
-
-  test_backup_import.js (real Chromium browser) — a malformed file is
-    rejected with current data completely untouched; Merge restores every
-    record type into an empty app (straight bets, the ladder AND its
-    step, the audit log — the specific bug where ladders/audit log were
-    previously dropped on import is fixed and directly tested here);
-    re-importing the same backup never creates duplicates; Replace All
-    requires explicit confirmation, actually removes local-only data not
-    in the backup, and restores exactly the backup's own records.
-
-  test_refresh_cadence.js (real Chromium browser) — the real refresh
-    timer is 15 seconds; calling the start function twice never creates a
-    second overlapping timer; hiding the tab actually stops all further
-    scoreboard fetches; becoming visible again triggers an immediate
-    refresh and restarts the timer; none of this ever causes an extra
-    roster fetch (confirmed the roster cache stays on its own ~12-hour
-    schedule, completely decoupled from the 15-second live-data loop).
-
-  test_ladder_prefill.js (real Chromium browser) — stake/odds correctly
-    prefill from the ticket (and a parlay correctly uses its COMBINED
-    odds, never a leg's); editing a prefilled value before reviewing is
-    honored, not silently reverted; the review step shows the correct
-    expected return AND expected profit as clearly distinct, explicitly
-    estimate-labeled figures; "Back" preserves edited values; the actual
-    created step uses the user's edited stake, not the original.
-
-  test_ladder_selection.js (real Chromium browser) — every open ladder
-    is listed by its real name, never a "most recent" label; with two-plus
-    open ladders nothing is silently preselected (an explicit choice is
-    required); with exactly one open ladder it's safely preselected;
-    closed/cancelled ladders are never offered; "Create a new ladder" is
-    its own clearly separate option; the ticket actually links to the
-    ladder the user explicitly picked.
-
-  test_status_colors.js (real Chromium browser) — a confirmed win renders
-    in the standardized green, a confirmed loss in the standardized red
-    (not the old ad-hoc orange-salmon it used before this fix), open/live
-    in blue, pending/needs-review in amber — and the specific bug this
-    fixes: a live target-hit is confirmed to render in its OWN distinct
-    color, never the same green as an actual confirmed win.
-
-  test_court_side_theme.js (real Chromium browser) — every specified
-    Court Side palette token (#17191D, #23262B, #F28C28, #F4EBDD,
-    #A4A9B0, #22C55E, #3B82F6, #F59E0B, #EF4444) is wired up exactly as
-    specified; the page actually renders in charcoal, not the old
-    navy-blue theme; primary action buttons and the selected nav tab are
-    confirmed to actually render in basketball orange; the overall tab
-    structure is confirmed unchanged by the redesign.
-
-  test_settings_page.js (real Chromium browser) — all five required
-    Settings sections are present; the backup-contents summary reflects
-    real data; Export/Import from Settings are confirmed to exercise the
-    exact same functions as the top-bar buttons, not a separate
-    implementation; the Local Storage and Live Data sections show real,
-    accurate status (not placeholders); the data-integrity check reports
-    no problems on clean data, never modifies anything when run, and is
-    directly confirmed to actually catch a deliberately-broken ladder
-    link when one exists.
-
-  test_v5_e2e.js (real Chromium browser, MOCKED ESPN, 40+ checks, updated
-    for v6) — re-verifies end-to-end that every v4/v5 behavior still
-    works correctly after all the v6 changes above: schema migration,
-    straight-bet/team-bet settlement, ladder linking/settlement/balance
-    math, the 30-minute archival rule surviving a simulated 45-minute-
-    closed reopening, Bet History filters and manual correction, Game
-    Center grouping and box-score formatting, and backup export including
-    ladders/audit log. Updated this session to remove the old on-court
-    assertions (confirms the feature is fully gone, not just hidden) and
-    confirm the new fallback "Players" grouping instead.
-
-  test_game_window.js (real Chromium browser, MOCKED ESPN) — the specific
-    fix covered in section 5 ("Games from the last 24 hours — always with
-    a full box score"): confirms the scoreboard is actually fetched for
-    two distinct calendar days, not one; a game that finished a few hours
-    ago and one that finished ~20 hours ago (technically "yesterday" on
-    ESPN's own calendar) both still appear, correctly labeled "Today" /
-    "Yesterday"; a game from ~34 hours ago is correctly excluded as
-    outside the window; a finished game's COMPLETE box score (every
-    player, real stat lines, team totals) loads with ZERO tracked bets on
-    it — the actual behavior requested — and that box score is fetched
-    once and reused on later refreshes rather than re-downloaded every
-    15-second tick.
-
-  test_retroactive_edit.js (real Chromium browser) — the new "Edit"
-    feature covered in item N above: a straight bet's Edit modal opens
-    prefilled with its real current values and actually corrects them in
-    storage (name AND stake), with the Straight Bets tab re-rendering the
-    change immediately; a parlay's ticket-level "Edit ticket" corrects the
-    name/stake without touching its legs, and each leg's OWN Edit button
-    corrects only that one leg, never the other leg or the ticket-level
-    fields, and an earlier ticket-level edit survives a later leg edit; a
-    ladder's "Edit ladder" corrects its name/goal without touching its
-    steps; a ladder STEP's Edit — tested specifically on an
-    ALREADY-SETTLED, already-won step — warns up front that its payout
-    will be recomputed, then actually recomputes the step's profit from
-    the new stake via the real settleStep() math (not left stale), and the
-    ladder's overall balance updates to match; Bet History's own Edit
-    button opens the identical modal and reaches the exact same underlying
-    ticket object as the live tabs (an edit made on the Straight Bets tab
-    shows up in History instantly, proving it's one shared record, not a
-    copy); and every edit is confirmed to write an audit-log entry naming
-    both the old and new value for each changed field.
-
-ALSO RUN: `node --check` on every .js file in this delivery — no syntax
-errors. A horizontal-overflow check at a 390×844 (iPhone-sized) viewport
-was run on every single tab, including the new Settings tab — zero
-overflow on any of them.
+Observed while building the tests: in automated Chromium, localStorage writes
+made a split second before reloading a page opened directly as a FILE
+(file://) were sometimes lost. Over http(s) this never happened in repeated
+runs. If you use the app from a file, the IndexedDB mirror and the next
+refresh's re-settlement cover this, but serving it over http(s) is the more
+robust setup.
 
 
 8. YOUR EXISTING DATA — MIGRATION & BACKUP
 ================================================================
-- Your entire v5 project (as it stood right before any v6 change) is
-  included in v5-backup-before-v6-changes/ in this delivery, which itself
-  still contains the v4 backup nested inside it — the full backup chain
-  is preserved. If anything about v6 ever looks wrong, you can go back to
-  any earlier version immediately.
+- (v6.1 note) The v6.0 delivery described a v5-backup-before-v6-changes/
+  folder; it is NOT in this repository. Earlier versions are recoverable
+  only from git history (which starts at v6.0) or from your own copies.
+  Export a backup from each device before upgrading.
 - The app still stores its data under the SAME key as v5 (nbaCC.v5) — it
   was deliberately NOT renamed for this release, since this is a
   refinement, not a rebuild. Only the internal schema version number

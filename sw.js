@@ -12,10 +12,12 @@
 // first load there fetches fresh files rather than serving anything that
 // might already be cached under the old name from an earlier local-server
 // session on the same browser.
-const CACHE_NAME = 'nba-prop-cc-v6-shell-2';
+// shell-3 (v6.1): + game-binding.js and the vendored, pinned tesseract.js bundle.
+const CACHE_NAME = 'nba-prop-cc-v6-shell-3';
 const SHELL_FILES = [
   './', './index.html', './style.css', './app.js', './teams.js', './parse-slip.js',
-  './line-rules.js', './prop-status.js', './settlement.js', './ladder.js', './archive.js',
+  './line-rules.js', './prop-status.js', './settlement.js', './game-binding.js', './ladder.js', './archive.js',
+  './vendor/tesseract.js-5.1.1/tesseract.min.js',
   './manifest.json', './icon-180.png', './icon-192.png', './icon-512.png',
 ];
 
