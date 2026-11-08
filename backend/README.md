@@ -51,8 +51,11 @@ stored in the database (requests are recorded by path only), and never printed.
 | `budget [--games-per-day N --snapshots-per-game M]` | no | PropLine: upper-bound requests/day for the schedule; The Odds API: monthly credits |
 | `refresh-events` | yes (1 request on PropLine) | upcoming NBA events (next 36h) |
 | `snapshot [--event ID] [--date YYYY-MM-DD]` | **yes** | capture now, for today's (ET) not-yet-started games |
-| `run-due` | **yes** | one scheduler tick: serve due slots (run every ~5 min from cron/systemd) |
-| `run-scheduler [--interval 300]` | **yes** | the same, as a long-running loop |
+| `run-due` | **yes** | one scheduler tick (cron/timer mode); exits 3 if a scheduler loop holds the DB lock |
+| `run-scheduler [--interval S] [--force]` | **yes** | the long-running loop the service templates run (single instance per DB, SIGTERM-safe) |
+| `health` | no | freshness/failure/gap/missed-slot/backlog/backup checks; exit 0 ok, 1 warn, 2 critical |
+| `paper [--all-quotes] [--full]` | no | REAL paper-trading report: record, ROI (95% CI), Brier vs no-vig, calibration, CLV, by market/book/probability bucket/side/main-alt; ledger hash check |
+| `maintenance` | no | the daily job now: prune, ledger hash check, SQLite backup (gzip, rotated) |
 | `status` | no | data freshness, job health, missed slots, credits (provider-reported) |
 | `coverage [--date]` | no | observed provider × bookmaker × market coverage for a date (incl. stale counts) |
 | `verify [--date] [--book B]` | no | sanity checks on stored quotes: two-sided pairs, invalid prices, overround, cross-book line agreement, sample rows |
@@ -60,15 +63,18 @@ stored in the database (requests are recorded by path only), and never printed.
 | `ingest-espn [--start --end \| --days N]` | ESPN (free) | schedules + final box scores |
 | `ingest-injuries` | ESPN + 1 PropLine request | injury reports (two sources, most recent wins) |
 | `project [--sims 10000]` | no | slate projections + evaluation of every live FanDuel/Fanatics quote |
-| `grade` | no | grade stored evaluations against final box scores (real lines, real outcomes) |
+| `grade` | no | grade the paper ledger (at the recommendation price) and each quote's last pre-tip evaluation against final box scores |
 | `backtest --start --end [--every N]` | no | walk-forward projection backtest (SIMULATED lines) |
-| `prune [--keep-days 14]` | no | drop old intermediate model evaluations (keeps each game's last pre-tip run) |
+| `prune [--keep-days 3]` | no | drop old intermediate model evaluations (keeps each game's last pre-tip run) |
 | `serve [--port 8765]` | no | local read-only dashboard: top props, projections, player research, model performance, data freshness |
 
 `run-due` / `run-scheduler` also run the research jobs on their own cadence (ESPN results
 hourly, injuries every 30 min, the model after snapshots or at least hourly, grading when
-new finals arrive), each isolated so a failure never stops odds capture. Disable with
-`RESEARCH_JOBS=0`.
+new finals arrive and hourly, daily maintenance after 05:00 ET), each isolated so a failure
+never stops odds capture (and an odds failure never stops grading). Disable with
+`RESEARCH_JOBS=0`. Hosting options, restart behaviour, storage estimates and the
+paper-trading record are documented in `docs/OPERATIONS.md`; service templates are in
+`deploy/` (not installed anywhere).
 
 Without the active provider's key (`PROPLINE_API_KEY` or `ODDS_API_KEY`), provider-calling
 commands make **no** request, record a `blocked_no_key` run, print `BLOCKED: ...` and exit 2.
@@ -108,7 +114,7 @@ slots run first) or is recorded as `skipped_budget`.
 NBA_EDGE_TEST_PG_URL=postgresql://postgres@127.0.0.1:55432/postgres .venv/bin/python -m pytest
 ```
 
-Last run (2026-11-07): 65 passed on SQLite; 113 passed with Postgres 16.15 enabled
+Last run (2026-11-08): 76 passed on SQLite; 134 passed with Postgres 16 enabled
 (database-backed tests run on both). All provider data in tests is synthetic
 (`tests/fake_provider.py`, `tests/fake_propline.py`, `tests/synthetic_league.py`); two tests drive the real CLI as a
 subprocess over real HTTP against local fake servers.

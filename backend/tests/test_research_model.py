@@ -263,7 +263,7 @@ def test_grading_real_outcomes_and_clv(engine, league):
                                                  "played": False, "minutes": 0, "pts": 0}])
         qk = conn.execute(select(prop_evaluations.c.quote_key).where(prop_evaluations.c.bookmaker == "fanduel", prop_evaluations.c.market_code == "PTS",
                                                                      prop_evaluations.c.side == "over")).scalar()
-        rid = conn.execute(insert(snapshot_runs).values(reason="closing", started_at=s["start_time"] - timedelta(minutes=5), status="ok")).inserted_primary_key[0]
+        rid = conn.execute(insert(snapshot_runs).values(reason="closing", provider="propline", started_at=s["start_time"] - timedelta(minutes=5), status="ok")).inserted_primary_key[0]
         conn.execute(insert(odds_snapshots).values(run_id=rid, captured_at=s["start_time"] - timedelta(minutes=5), snapshot_reason="closing",
                                                    change_type="price_change", quote_key=qk, provider="propline", sport_key="basketball_nba",
                                                    provider_event_id="pl-1", bookmaker="fanduel", market_key="player_points", is_alternate=False,

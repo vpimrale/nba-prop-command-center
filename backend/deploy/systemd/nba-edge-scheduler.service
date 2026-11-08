@@ -1,0 +1,31 @@
+# NOT INSTALLED AUTOMATICALLY. Template for a Linux machine you control (home PC, Raspberry Pi,
+# or a free-tier VM). Install as a *user* service (no root needed):
+#   mkdir -p ~/.config/systemd/user && cp nba-edge-scheduler.service ~/.config/systemd/user/
+#   edit the paths below, then:
+#   systemctl --user daemon-reload && systemctl --user enable --now nba-edge-scheduler
+#   loginctl enable-linger "$USER"      # keep running when you are logged out / after reboot
+#   journalctl --user -u nba-edge-scheduler -f
+[Unit]
+Description=NBA Edge paper-trading scheduler (odds capture, injuries, model, grading; paper only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/nba-prop-command-center/backend
+# Secrets live in this git-ignored file (chmod 600): PROPLINE_API_KEY=..., optional HEALTHCHECK_PING_URL=...
+EnvironmentFile=%h/nba-prop-command-center/backend/.env
+ExecStart=%h/nba-prop-command-center/backend/.venv/bin/python -m nba_edge run-scheduler
+# SIGTERM -> the loop finishes its current tick and releases the DB lock.
+KillSignal=SIGTERM
+TimeoutStopSec=300
+Restart=always
+RestartSec=60
+# Crash-loop guard: at most 10 restarts per hour, then systemd stops trying (health/ping will alert).
+StartLimitIntervalSec=3600
+StartLimitBurst=10
+Nice=10
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

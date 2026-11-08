@@ -21,6 +21,7 @@ from ..research.names import match_player, norm_name
 from ..research.teams import espn_abbr
 from .config import MARKET_STATS, MODEL_VERSION, DecisionConfig, ModelConfig
 from .history import load_history
+from .paper import record_recommendations
 from .pricing import evaluate, novig_two_way
 from .project import GameCtx, player_params, team_adjust, team_roster
 from .simulate import line_probs, simulate_player, summarize
@@ -69,6 +70,7 @@ def run_slate(engine: Engine, *, now: datetime | None = None, date_et: str | Non
     rng = np.random.default_rng(seed)
     proj_rows, eval_rows, xref_rows = [], [], []
     sims: dict[str, object] = {}
+    summs: dict[str, dict] = {}
     params_by_game: dict[str, list] = {}
     n_players = 0
     notes: list[str] = []
@@ -93,6 +95,7 @@ def run_slate(engine: Engine, *, now: datetime | None = None, date_et: str | Non
                 sim = simulate_player(p, h.league, cfg, rng)
                 sims[p.athlete_id] = sim
                 summ = summarize(sim)
+                summs[p.athlete_id] = summ
             for code in ("MIN", *MARKET_STATS):
                 s = summ[code] if summ else {"mean": 0.0, "sd": 0.0, "p10": 0, "p25": 0, "median": 0, "p75": 0, "p90": 0}
                 proj_rows.append(dict(run_id=run_id, espn_event_id=g["espn_event_id"], athlete_id=p.athlete_id, player_name=p.player_name,
@@ -190,6 +193,18 @@ def run_slate(engine: Engine, *, now: datetime | None = None, date_et: str | Non
             conn.execute(insert(projections), chunk)
         for chunk in (eval_rows[i:i + 2000] for i in range(0, len(eval_rows), 2000)):
             conn.execute(insert(prop_evaluations), chunk)
+        # Paper ledger: freeze each newly qualified PAPER_CANDIDATE exactly as evaluated now.
+        gmap = {g["espn_event_id"]: g for g in games}
+        cands = []
+        for r in eval_rows:
+            if r["decision"] != "PAPER_CANDIDATE":
+                continue
+            g, p = gmap[r["espn_event_id"]], next(x for x in params_by_game[r["espn_event_id"]] if x.athlete_id == r["athlete_id"])
+            s = (summs.get(r["athlete_id"]) or {}).get(r["market_code"]) or {}
+            cands.append({**r, "slate_date_et": date_et, "commence_time": g["start_time"], "team": p.team, "opponent": p.opponent,
+                          "projection_mean": s.get("mean"), "projection_median": s.get("median"), "projection_sd": s.get("sd"),
+                          "minutes_mean": round(p.min_mu, 2)})
+        n_paper_new = record_recommendations(conn, run_id=run_id, now=now, candidates=cands)
         for x in xref_rows:
             exists = conn.execute(select(player_xref.c.provider).where(and_(player_xref.c.provider == x["provider"],
                                   player_xref.c.provider_player_key == x["provider_player_key"]))).first()
@@ -200,6 +215,8 @@ def run_slate(engine: Engine, *, now: datetime | None = None, date_et: str | Non
     if unmatched:
         notes.append(f"unmatched odds players ({len(unmatched)}): " + ", ".join(sorted(unmatched)[:15]))
     n_cand = sum(1 for r in eval_rows if r["decision"] == "PAPER_CANDIDATE")
+    if n_cand:
+        notes.append(f"paper ledger: {n_paper_new} new recommendation(s) recorded ({n_cand - n_paper_new} already on record)")
     return _finish(engine, run_id, now, t0, status="ok", n_games=len(games), n_players=n_players, n_projections=len(proj_rows),
                    n_evaluations=len(eval_rows), n_candidates=n_cand, odds_as_of=odds_as_of, detail="; ".join(notes) or None)
 

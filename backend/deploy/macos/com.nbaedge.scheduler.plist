@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- NOT INSTALLED AUTOMATICALLY. macOS LaunchAgent: edit the paths (replace /Users/YOU), then
+     cp com.nbaedge.scheduler.plist ~/Library/LaunchAgents/ && launchctl load ~/Library/LaunchAgents/com.nbaedge.scheduler.plist
+     Secrets: put PROPLINE_API_KEY in backend/.env; the wrapper below loads it.
+     Prevent sleep while plugged in: System Settings > Battery/Energy > prevent automatic sleeping. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.nbaedge.scheduler</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string><string>-c</string>
+    <string>cd /Users/YOU/nba-prop-command-center/backend &amp;&amp; set -a &amp;&amp; . ./.env &amp;&amp; set +a &amp;&amp; exec .venv/bin/python -m nba_edge run-scheduler</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>60</integer>
+  <key>StandardOutPath</key><string>/Users/YOU/nba-prop-command-center/backend/data/logs/scheduler.log</string>
+  <key>StandardErrorPath</key><string>/Users/YOU/nba-prop-command-center/backend/data/logs/scheduler.log</string>
+</dict>
+</plist>

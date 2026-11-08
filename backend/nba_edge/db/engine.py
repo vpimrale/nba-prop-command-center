@@ -7,6 +7,7 @@ from sqlalchemy import create_engine, event, inspect, insert, select, text
 from sqlalchemy.engine import Engine
 
 from . import research_schema  # noqa: F401  (registers research/model tables on metadata)
+from .paper_schema import install_immutability_triggers
 from .schema import SCHEMA_VERSION, metadata, schema_info, utcnow
 
 
@@ -55,6 +56,7 @@ def init_db(engine: Engine) -> int:
     schema version."""
     metadata.create_all(engine)
     _add_missing_columns(engine)
+    install_immutability_triggers(engine)
     with engine.begin() as conn:
         current = conn.execute(select(schema_info.c.version).order_by(schema_info.c.id.desc())).scalar()
         if current is None or current < SCHEMA_VERSION:

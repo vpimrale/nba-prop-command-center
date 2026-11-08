@@ -10,3 +10,4 @@ __pycache__/
 *.db
 /backend/data/
 test-results/
+*.sqlite3.gz

@@ -1,0 +1,10 @@
+# NOT STARTED AUTOMATICALLY. Runs the scheduler with a persistent volume. Secrets come from
+# backend/.env (git-ignored). The dashboard is NOT exposed: PropLine data may not be redistributed.
+services:
+  scheduler:
+    build: ..
+    env_file: ../.env
+    volumes:
+      - ../data:/data
+    restart: unless-stopped
+    stop_grace_period: 5m

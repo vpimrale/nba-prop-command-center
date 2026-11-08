@@ -3,7 +3,9 @@
 A slate run stores ~10k evaluations. Intermediate runs are only useful for a short while;
 what calibration needs is each game's LAST pre-tip evaluation. So, for runs older than
 `keep_days`: keep evaluations of the last run before each game's tip, keep anything already
-graded, delete the rest (and those runs' projection rows except the retained runs')."""
+graded, delete the rest (and those runs' projection rows except the retained runs'). Once a game
+is final and graded, ungraded evaluations of it are deleted from retained runs as well.
+Paper recommendations live in their own immutable table and are never pruned."""
 from __future__ import annotations
 
 from datetime import timedelta
@@ -26,9 +28,16 @@ def prune_evaluations(engine: Engine, keep_days: int = 14) -> dict:
         old_runs = [r[0] for r in conn.execute(select(model_runs.c.id).where(model_runs.c.started_at < cutoff))]
         prunable = [r for r in old_runs if r not in keep]
         graded = select(prop_grades.c.evaluation_id)
-        n_eval = n_proj = 0
+        n_eval = n_proj = n_final = 0
         if prunable:
             n_eval = conn.execute(delete(prop_evaluations).where(and_(e.run_id.in_(prunable), e.id.not_in(graded)))).rowcount or 0
             n_proj = conn.execute(delete(projections).where(projections.c.run_id.in_(prunable))).rowcount or 0
+        # In retained runs, once a game is final and graded, its ungraded (superseded) evaluations
+        # carry no further information: grading already kept each quote's last pre-tip evaluation.
+        kept_old = [r for r in old_runs if r in keep]
+        if kept_old:
+            finals = select(nba_games.c.espn_event_id).where(and_(nba_games.c.completed.is_(True), nba_games.c.box_ingested.is_(True)))
+            n_final = conn.execute(delete(prop_evaluations).where(and_(e.run_id.in_(kept_old), e.id.not_in(graded),
+                                                                       e.espn_event_id.in_(finals)))).rowcount or 0
     return {"runs_considered": len(old_runs), "runs_retained_for_calibration": len(set(old_runs) & keep),
-            "evaluations_deleted": n_eval, "projections_deleted": n_proj}
+            "evaluations_deleted": n_eval, "superseded_final_evaluations_deleted": n_final, "projections_deleted": n_proj}

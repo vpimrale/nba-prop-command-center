@@ -6,6 +6,8 @@ reported separately from the simulated-line backtest. Paper only: no bets were p
 
 CLV: implied probability of the last pre-tip snapshot of the same quote minus implied
 probability at evaluation time (positive = the market moved toward the evaluated side).
+Only computed when a successful odds capture ran after the evaluation and before tip-off;
+otherwise it is unavailable (None), never a misleading 0.
 """
 from __future__ import annotations
 
@@ -13,7 +15,7 @@ from sqlalchemy import and_, func, insert, select
 from sqlalchemy.engine import Engine
 
 from ..db.research_schema import nba_games, nba_player_games, prop_evaluations, prop_grades
-from ..db.schema import games as odds_games, odds_snapshots, utcnow
+from ..db.schema import games as odds_games, odds_snapshots, snapshot_runs, utcnow
 from .config import MARKET_STATS
 from .metrics import summarize_binary
 
@@ -21,10 +23,21 @@ from .metrics import summarize_binary
 def grade_pending(engine: Engine, limit: int = 200_000) -> dict:
     e, gr = prop_evaluations.c, prop_grades.c
     with engine.connect() as conn:
-        pending = [dict(r._mapping) for r in conn.execute(
-            select(prop_evaluations).outerjoin(prop_grades, prop_grades.c.evaluation_id == e.id)
+        rows = [dict(r._mapping) for r in conn.execute(
+            select(prop_evaluations, nba_games.c.start_time.label("game_start")).outerjoin(prop_grades, prop_grades.c.evaluation_id == e.id)
             .join(nba_games, nba_games.c.espn_event_id == e.espn_event_id)
             .where(and_(gr.evaluation_id.is_(None), nba_games.c.completed.is_(True), nba_games.c.box_ingested.is_(True))).limit(limit))]
+        # Only each quote's LAST pre-tip evaluation is graded (that is what calibration uses);
+        # superseded intra-day evaluations stay ungraded so retention can prune them.
+        last: dict[str, dict] = {}
+        for p in rows:
+            if p["game_start"] is not None and p["evaluated_at"] >= p["game_start"]:
+                continue
+            if p["quote_key"] not in last or p["id"] > last[p["quote_key"]]["id"]:
+                last[p["quote_key"]] = p
+        already = {r[0] for r in conn.execute(select(e.quote_key).join(prop_grades, prop_grades.c.evaluation_id == e.id)
+                                              .where(e.quote_key.in_(list(last) or ["-"])))} if last else set()
+        pending = [p for k, p in last.items() if k not in already]
         if not pending:
             return {"graded": 0}
         ev_ids = {p["espn_event_id"] for p in pending}
@@ -42,9 +55,17 @@ def grade_pending(engine: Engine, limit: int = 200_000) -> dict:
                 odds_snapshots.c.quote_key == qk, odds_snapshots.c.captured_at <= tip)).order_by(odds_snapshots.c.captured_at.desc(),
                 odds_snapshots.c.id.desc()).limit(1)).first()
             closing[qk] = (row.american_odds, row.decimal_odds) if row else None
+        # CLV needs a capture AFTER the evaluation and before tip; otherwise the "close" is just
+        # the evaluated price again and CLV would read 0 — it is recorded as unavailable instead.
+        runs = {}
+        for prov in {p["provider"] for p in pending}:
+            runs[prov] = sorted(r[0] for r in conn.execute(select(snapshot_runs.c.started_at).where(and_(
+                snapshot_runs.c.provider == prov, snapshot_runs.c.status.in_(["ok", "partial"])))))
     out = []
     now = utcnow()
     for p in pending:
+        tip = tips.get(p["provider_event_id"])
+        later = tip is not None and any(p["evaluated_at"] < t <= tip for t in runs.get(p["provider"], ()))
         b = box.get((p["espn_event_id"], p["athlete_id"]))
         if not b or not b["played"]:
             res, actual = "void", None
@@ -57,7 +78,7 @@ def grade_pending(engine: Engine, limit: int = 200_000) -> dict:
             else:
                 res = "loss"
         cl = closing.get(p["quote_key"])
-        clv = (1 / cl[1] - 1 / p["decimal_odds"]) if cl and cl[1] else None
+        clv = (1 / cl[1] - 1 / p["decimal_odds"]) if cl and cl[1] and later else None
         out.append(dict(evaluation_id=p["id"], graded_at=now, actual=actual, result=res, closing_american=cl[0] if cl else None, clv_prob=clv))
     with engine.begin() as conn:
         for i in range(0, len(out), 5000):

@@ -75,24 +75,113 @@ def cmd_snapshot(settings, args) -> int:
     return 0 if result["status"] in ("ok", "no_events") else 2
 
 
+def _lock_or_explain(engine, settings, holder, force=False) -> bool:
+    from .pipeline.ops import acquire_lock
+    ok, row = acquire_lock(engine, holder, datetime.now(timezone.utc), settings.lock_stale_min)
+    if not ok and not force:
+        print(f"LOCKED: another scheduler ({row['holder']}) heartbeat {row['heartbeat_at'].isoformat()} holds this database. "
+              f"Not starting a second one (it would double-spend provider requests). Use --force only if that process is gone.", file=sys.stderr)
+        return False
+    if not ok and force:
+        from sqlalchemy import update
+        from .db.paper_schema import scheduler_lock
+        with engine.begin() as conn:
+            conn.execute(update(scheduler_lock).values(holder=holder, heartbeat_at=datetime.now(timezone.utc)))
+    return True
+
+
 def cmd_run_due(settings, args) -> int:
-    summary = run_due(_engine(settings), settings)
+    """One tick (for cron / systemd timers / Task Scheduler). Skips if a scheduler loop holds the lock."""
+    from .pipeline.ops import holder_id, ping, release_lock
+    engine = _engine(settings)
+    holder = holder_id()
+    if not _lock_or_explain(engine, settings, holder):
+        return 3
+    try:
+        summary = run_due(engine, settings)
+    finally:
+        release_lock(engine, holder)
     _print(summary)
+    failed = summary.get("status") != "ok" or any(isinstance(v, dict) and v.get("status") == "failed" for v in (summary.get("research") or {}).values())
+    ping(settings, failed=failed)
     return 0 if summary.get("status") == "ok" else 2
 
 
 def cmd_run_scheduler(settings, args) -> int:
+    """Long-running loop. Restart-safe: all due-ness lives in the database, so a restarted
+    process catches up on its first tick. SIGTERM/SIGINT stop it cleanly between ticks."""
+    import signal
+    import threading
+    from .pipeline.ops import heartbeat, holder_id, ping, release_lock
     engine = _engine(settings)
-    log.info("scheduler loop: tick every %ss (Ctrl-C to stop)", args.interval)
-    while True:
+    holder = holder_id()
+    if not _lock_or_explain(engine, settings, holder, force=args.force):
+        return 3
+    interval = args.interval or settings.tick_expected_min * 60
+    stop = threading.Event()
+
+    def _stop(signum, _frame):
+        log.info("signal %s: stopping after the current tick", signum)
+        stop.set()
+    for sig in (signal.SIGTERM, signal.SIGINT):
         try:
-            s = run_due(engine, settings)
-            log.info("tick: status=%s runs=%d missed=%d", s.get("status"), len(s["runs"]), len(s["missed"]))
-        except Exception:  # keep the loop alive; the failure is logged and visible in job_runs
-            log.exception("scheduler tick failed")
-        if args.once:
-            return 0
-        time.sleep(args.interval)
+            signal.signal(sig, _stop)
+        except ValueError:  # not in main thread (tests)
+            pass
+    log.info("scheduler %s: tick every %ss", holder, interval)
+    try:
+        while not stop.is_set():
+            failed = True
+            try:
+                if not heartbeat(engine, holder, datetime.now(timezone.utc)) and not _lock_or_explain(engine, settings, holder):
+                    return 3
+                s = run_due(engine, settings)
+                bad = [k for k, v in (s.get("research") or {}).items() if isinstance(v, dict) and v.get("status") == "failed"]
+                failed = s.get("status") == "failed" or bool(bad)
+                log.info("tick: status=%s runs=%d missed=%d%s%s", s.get("status"), len(s["runs"]), len(s["missed"]),
+                         f" research_failed={bad}" if bad else "", f" gap={s['gap']['gap_min']}min" if s.get("gap") else "")
+            except Exception:  # keep the loop alive; the failure is logged and visible in job_runs
+                log.exception("scheduler tick failed")
+            heartbeat(engine, holder, datetime.now(timezone.utc))
+            ping(settings, failed=failed)
+            if args.once:
+                break
+            stop.wait(interval)
+    finally:
+        release_lock(engine, holder)
+    return 0
+
+
+def cmd_health(settings, args) -> int:
+    from .pipeline.ops import LEVELS, health_report
+    r = health_report(_engine(settings), settings)
+    _print(r)
+    return LEVELS[r["level"]]
+
+
+def cmd_maintenance(settings, args) -> int:
+    from .pipeline.ops import run_maintenance
+    r = run_maintenance(_engine(settings), settings, datetime.now(timezone.utc))
+    _print(r)
+    return 0 if r["status"] == "ok" else 2
+
+
+def cmd_paper(settings, args) -> int:
+    from .model.paper import calibration_track, paper_report, verify_hashes
+    engine = _engine(settings)
+    rep = paper_report(engine)
+    if not args.full:
+        rep.pop("recent", None)
+        for grp in (rep.get("by") or {}).values():
+            for v in grp.values():
+                v.pop("reliability", None)
+        if rep.get("calibration"):
+            rep["calibration"] = {k: v for k, v in rep["calibration"].items() if k != "reliability"}
+    out = {"paper": rep, "ledger_integrity": verify_hashes(engine)}
+    if args.all_quotes:
+        out["all_quotes_calibration"] = calibration_track(engine)
+    _print(out)
+    return 0
 
 
 def cmd_status(settings, args) -> int:
@@ -183,9 +272,11 @@ def cmd_project(settings, args) -> int:
 
 
 def cmd_grade(settings, args) -> int:
-    from .model.grading import grade_pending, live_performance
+    from .model.grading import grade_pending
+    from .model.paper import grade_paper
     engine = _engine(settings)
-    _print({"grading": grade_pending(engine), "live_performance": live_performance(engine)})
+    _print({"paper_ledger": grade_paper(engine), "all_quotes": grade_pending(engine),
+            "note": "Graded against final ESPN box scores. Paper only — see `nba-edge paper` for the report."})
     return 0
 
 
@@ -206,13 +297,13 @@ def cmd_backtest(settings, args) -> int:
 
 def cmd_prune(settings, args) -> int:
     from .model.retention import prune_evaluations
-    _print(prune_evaluations(_engine(settings), keep_days=args.keep_days))
+    _print(prune_evaluations(_engine(settings), keep_days=args.keep_days if args.keep_days is not None else settings.prune_keep_days))
     return 0
 
 
 def cmd_serve(settings, args) -> int:
     from .dashboard.server import serve
-    httpd = serve(_engine(settings), args.host, args.port)
+    httpd = serve(_engine(settings), args.host, args.port, settings=settings)
     print(f"dashboard: http://{args.host}:{httpd.server_address[1]}/  (Ctrl-C to stop; local, read-only)", file=sys.stderr)
     try:
         httpd.serve_forever()
@@ -233,11 +324,18 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--date", help="ET game date YYYY-MM-DD (default: today ET)")
     s.add_argument("--reason", default="manual")
     s.set_defaults(fn=cmd_snapshot)
-    sub.add_parser("run-due", help="one scheduler tick: serve any due snapshot slots").set_defaults(fn=cmd_run_due)
-    r = sub.add_parser("run-scheduler", help="loop: run-due every --interval seconds")
-    r.add_argument("--interval", type=int, default=300)
+    sub.add_parser("run-due", help="one scheduler tick (cron/timer mode): odds slots + research jobs that are due").set_defaults(fn=cmd_run_due)
+    r = sub.add_parser("run-scheduler", help="long-running loop: one tick every --interval seconds (single instance per database)")
+    r.add_argument("--interval", type=int, default=0, help="seconds (default: SCHEDULER_TICK_MIN x 60)")
     r.add_argument("--once", action="store_true")
+    r.add_argument("--force", action="store_true", help="take the lock even if another holder's heartbeat is fresh")
     r.set_defaults(fn=cmd_run_scheduler)
+    sub.add_parser("health", help="freshness/failure/gap checks; exit 0 ok, 1 warn, 2 critical").set_defaults(fn=cmd_health)
+    sub.add_parser("maintenance", help="daily job now: prune, ledger hash check, SQLite backup").set_defaults(fn=cmd_maintenance)
+    pp = sub.add_parser("paper", help="paper-trading report (REAL lines, graded; separate from simulated backtests)")
+    pp.add_argument("--full", action="store_true", help="include reliability bins and recent recommendations")
+    pp.add_argument("--all-quotes", action="store_true", help="also show the all-quotes calibration track")
+    pp.set_defaults(fn=cmd_paper)
     sub.add_parser("status", help="data freshness, job health, credits").set_defaults(fn=cmd_status)
     c = sub.add_parser("coverage", help="observed bookmaker × market coverage for an ET date")
     c.add_argument("--date")
@@ -266,7 +364,7 @@ def build_parser() -> argparse.ArgumentParser:
     bt.add_argument("--every", type=int, default=3); bt.add_argument("--sims", type=int, default=2000); bt.add_argument("--max-dates", type=int)
     bt.set_defaults(fn=cmd_backtest)
     pr = sub.add_parser("prune", help="retention: drop old non-final model evaluations (keeps each game's last pre-tip run)")
-    pr.add_argument("--keep-days", type=int, default=14)
+    pr.add_argument("--keep-days", type=int, default=None, help="default: PRUNE_KEEP_DAYS (3)")
     pr.set_defaults(fn=cmd_prune)
     sv = sub.add_parser("serve", help="local read-only research dashboard")
     sv.add_argument("--host", default="127.0.0.1"); sv.add_argument("--port", type=int, default=8765)
@@ -285,6 +383,7 @@ def main(argv: list[str] | None = None) -> int:
     settings = Settings.from_env()
     register_secret(settings.odds_api_key.reveal())
     register_secret(settings.propline_api_key.reveal())
+    register_secret(settings.healthcheck_ping_url.reveal())
     return args.fn(settings, args)
 
 

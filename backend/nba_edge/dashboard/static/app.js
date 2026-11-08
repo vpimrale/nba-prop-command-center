@@ -25,6 +25,7 @@ async function loadFreshness() {
     f.innerHTML = esc(bits.join(' · ')) + (s.warnings.length ? ` · <span class="warn">${s.warnings.length} warning(s)</span>` : '');
     f.classList.toggle('bad', s.warnings.length > 0);
     renderData(s);
+    loadHealth().catch(() => {});
   } catch (e) { $('#freshness').textContent = 'backend unreachable: ' + e.message; }
 }
 
@@ -40,10 +41,20 @@ function renderData(s) {
       <div class="card"><h3>Model run</h3><div class="big">${s.model_run ? '#' + s.model_run.id : '—'}</div><div class="muted">${s.model_run ? esc(`${s.model_run.n_players} players · ${s.model_run.n_evaluations} quotes · ${s.model_run.n_candidates} candidates`) : ''}</div></div>
       <div class="card"><h3>Provider usage today</h3><div class="muted">${esc(JSON.stringify(s.odds.usage_by_provider))}</div></div>
     </div>
+    <h3>Scheduler health</h3><div id="health-body" class="muted">loading…</div>
     <h3>Jobs</h3><div class="tablewrap"><table id="jobs-table"></table></div>`;
   table($('#jobs-table'), [
     { h: 'Job', l: 1, f: (r) => esc(r.k) }, { h: 'Status', f: (r) => esc(r.status) }, { h: 'Age (min)', f: (r) => num(r.age_min, 0) },
     { h: 'Detail', l: 1, f: (r) => esc((r.detail || '').slice(0, 140)) }], jobRows);
+}
+
+async function loadHealth() {
+  const r = await get('/api/health');
+  const el = $('#health-body');
+  if (!el) return;
+  el.innerHTML = `<div class="banner ${r.level === 'ok' ? 'nobet' : ''}">Overall: <b class="${r.level === 'ok' ? '' : 'warn'}">${esc(r.level.toUpperCase())}</b> (as of ${esc(r.as_of.slice(0, 16).replace('T', ' '))} UTC)</div><div class="tablewrap"><table id="health-table"></table></div>`;
+  table($('#health-table'), [{ h: 'Check', l: 1, f: (c) => esc(c.check) }, { h: 'Level', f: (c) => `<span class="${c.level === 'ok' ? '' : 'warn'}">${esc(c.level)}</span>` },
+    { h: 'Detail', l: 1, f: (c) => esc(c.detail) }], r.checks);
 }
 
 async function loadProps() {
@@ -147,15 +158,59 @@ function relChart(model, base) {
     ${dots(base, '#EF4444')}${dots(model, '#22C55E')}</svg>`;
 }
 
+const LABEL = { market: 'Market', sportsbook: 'Sportsbook', probability_bucket: 'Model probability', side: 'Over / under', line_type: 'Main / alternate', model_version: 'Model version', decision: 'Decision' };
+
+function groupTable(id, groups, withRoi) {
+  const rows = Object.entries(groups || {}).map(([k, v]) => ({ k, ...v }));
+  const cols = [{ h: 'Group', l: 1, f: (r) => esc(MARKET[r.k] || r.k) }, { h: 'n', f: (r) => r.n },
+    { h: 'W-L-P-V', f: (r) => `${r.wins}-${r.losses}-${r.pushes}-${r.voids}` },
+    { h: 'Model prob', f: (r) => pct(r.mean_model_prob) }, { h: 'Observed', f: (r) => pct(r.observed_win_rate) },
+    { h: 'Brier model', f: (r) => num(r.brier_model, 4) }, { h: 'Brier no-vig', f: (r) => num(r.brier_market_novig, 4) },
+    { h: 'CLV (n)', f: (r) => r.clv?.n ? `${sgn(r.clv.mean_prob, 4)} (${r.clv.n})` : '—' }, { h: 'Beat close', f: (r) => pct(r.clv?.pct_beat_close, 0) }];
+  if (withRoi) cols.push({ h: 'Units', f: (r) => sgn(r.profit_units, 2) }, { h: 'ROI', f: (r) => pct(r.roi) },
+    { h: 'ROI 95% CI', f: (r) => (r.roi_ci95 ? `${pct(r.roi_ci95[0])} … ${pct(r.roi_ci95[1])}` : '—') });
+  table($('#' + id), cols, rows);
+}
+
+async function loadPaper() {
+  const d = await get('/api/paper');
+  const p = d.paper, aq = d.all_quotes, ev = p.evidence_status, o = p.overall || {};
+  let h = `<h2><span class="label-real">REAL</span> paper-trading ledger</h2>
+    <div class="banner">${esc(p.track)} Real-money betting: <b>${esc(p.real_money_betting)}</b>. Profitability claim: <b>${esc(p.profitability_claim)}</b>.
+    Evidence: <b>${ev.decided_results} of ${ev.minimum_before_any_review}</b> decided results needed before any review (${esc(ev.status.replaceAll('_', ' '))}). ${esc(ev.note)}</div>
+    <div class="cards">
+      <div class="card"><h3>Recommendations</h3><div class="big">${p.n_recommendations}</div><div class="muted">${p.n_graded} graded · ${p.n_pending} pending · ${p.n_independent_positions} independent positions</div></div>
+      <div class="card"><h3>Record (W-L-P-V)</h3><div class="big">${o.n ? `${o.wins}-${o.losses}-${o.pushes}-${o.voids}` : '—'}</div><div class="muted">at the price captured when recommended</div></div>
+      <div class="card"><h3>Paper ROI</h3><div class="big">${o.n ? pct(o.roi) : '—'}</div><div class="muted">${o.roi_ci95 ? `95% CI ${pct(o.roi_ci95[0])} … ${pct(o.roi_ci95[1])}` : 'needs ≥2 settled'} · ${o.n ? sgn(o.profit_units, 2) + ' units' : ''}</div></div>
+      <div class="card"><h3>Brier model / no-vig</h3><div class="big">${num(o.brier_model, 4)}</div><div class="muted">market no-vig ${num(o.brier_market_novig, 4)} (lower is better)</div></div>
+      <div class="card"><h3>Closing-line value</h3><div class="big">${o.clv?.n ? sgn(o.clv.mean_prob, 4) : '—'}</div><div class="muted">${o.clv?.n ? `${pct(o.clv.pct_beat_close, 0)} beat the close (n=${o.clv.n})` : 'no closing prices yet'}</div></div>
+    </div>`;
+  if (!p.n_graded) h += `<div class="banner nobet">No graded paper recommendations yet. A recommendation is graded once its game is final and ESPN's box score has been ingested (the scheduler does this). Until hundreds exist, these numbers say nothing about profitability.</div>`;
+  h += Object.keys(p.by || {}).map((k) => `<h3>By ${esc(LABEL[k] || k)}</h3><div class="tablewrap"><table id="pg-${k}"></table></div>`).join('');
+  h += `<h3>Latest recommendations (immutable)</h3><div class="tablewrap"><table id="paper-recent"></table></div>`;
+  h += `<h2><span class="label-real">REAL</span> all-quotes calibration track</h2><p class="hint">${esc(aq.track)}. ${aq.n_decided || 0} decided quotes (each quote's last pre-tip evaluation).</p>`;
+  if (aq.n_decided) h += `<div class="cards"><div class="card"><h3>Reliability</h3>${relChart(aq.model?.reliability, aq.market_novig_baseline?.reliability)}<div class="muted">green = model, red = market no-vig</div></div>
+     <div class="card"><h3>Brier</h3><div class="muted">${esc(`model ${aq.model?.brier} · market no-vig ${aq.market_novig_baseline?.brier ?? '—'} · constant ${aq.model?.brier_constant_baseline}`)}</div><div class="muted">${esc(`ECE model ${aq.model?.ece} · no-vig ${aq.market_novig_baseline?.ece ?? '—'}`)}</div></div></div>` +
+    Object.keys(aq.by || {}).map((k) => `<h3>By ${esc(LABEL[k] || k)}</h3><div class="tablewrap"><table id="aq-${k}"></table></div>`).join('');
+  $('#paper-body').innerHTML = h;
+  Object.entries(p.by || {}).forEach(([k, g]) => groupTable('pg-' + k, g, true));
+  Object.entries(aq.by || {}).forEach(([k, g]) => groupTable('aq-' + k, g, false));
+  table($('#paper-recent'), [
+    { h: 'Recommended (UTC)', l: 1, f: (r) => esc((r.recommended_at || '').slice(0, 16).replace('T', ' ')) },
+    { h: 'Player', l: 1, f: (r) => `<a data-player="${esc(r.athlete_id)}">${esc(r.player_name)}</a>` }, { h: 'Book', l: 1, f: (r) => esc(r.bookmaker) },
+    { h: 'Market', l: 1, f: (r) => esc(MARKET[r.market_code] || r.market_code) + (r.is_alternate ? ' (alt)' : '') },
+    { h: 'Side', l: 1, f: (r) => esc(r.side) }, { h: 'Line', f: (r) => num(r.line, 1) }, { h: 'Odds', f: (r) => odds(r.american_odds) },
+    { h: 'Proj.', f: (r) => num(r.projection_mean, 1) }, { h: 'Model', f: (r) => pct(r.model_prob) }, { h: 'No-vig', f: (r) => pct(r.novig_prob) },
+    { h: 'EV', f: (r) => sgn(r.ev, 3) }, { h: 'Model ver.', l: 1, f: (r) => esc(r.model_version) },
+    { h: 'Result', f: (r) => esc(r.result || 'pending') }, { h: 'Actual', f: (r) => num(r.actual, 0) },
+    { h: 'Units', f: (r) => (r.profit_units === null || r.profit_units === undefined ? '—' : sgn(r.profit_units, 2)) },
+    { h: 'Close', f: (r) => odds(r.closing_american) }, { h: 'CLV', f: (r) => sgn(r.clv_prob, 4) }], p.recent || []);
+}
+
 async function loadPerf() {
-  const d = await get('/api/performance');
-  const bt = d.backtest, live = d.live;
-  let h = `<h2><span class="label-real">REAL</span> lines, real outcomes (paper only)</h2>`;
-  h += live.n_decided ? `<div class="cards"><div class="card"><h3>Graded quotes</h3><div class="big">${live.n_decided}</div><div class="muted">${live.n_void} void · ${live.n_push} push</div></div>
-      <div class="card"><h3>Model Brier / ECE</h3><div class="big">${num(live.model.brier, 4)}</div><div class="muted">ECE ${num(live.model.ece, 3)} · log loss ${num(live.model.log_loss, 3)}</div></div>
-      <div class="card"><h3>Market no-vig Brier</h3><div class="big">${live.market_novig_baseline ? num(live.market_novig_baseline.brier, 4) : '—'}</div><div class="muted">the benchmark to beat</div></div>
-      <div class="card"><h3>Paper candidates</h3><div class="big">${live.paper_candidates?.n ?? 0}</div><div class="muted">${esc(`wins ${live.paper_candidates?.wins ?? 0} · units ${live.paper_candidates?.units ?? 0} · mean CLV ${live.paper_candidates?.mean_clv_prob ?? '—'}`)}</div></div></div>`
-    : `<div class="banner nobet">No graded live evaluations yet. They appear after tonight's games finish and box scores are ingested (\`nba-edge grade\`). Until hundreds exist, nothing here says anything about profitability.</div>`;
+  const d = await get('/api/simulated');
+  const bt = d.backtest;
+  let h = `<div class="banner"><span class="label-sim">SIMULATED</span> ${esc(d.label)} Real paper results are on the Paper trading tab and are never combined with these.</div>`;
   h += `<h2><span class="label-sim">SIMULATED LINES</span> walk-forward projection backtest</h2>`;
   if (!bt) { h += '<div class="banner nobet">No backtest run yet (`nba-edge backtest`).</div>'; $('#perf-body').innerHTML = h; return; }
   const s = bt.summary || {};
@@ -180,6 +235,8 @@ document.addEventListener('click', (e) => {
     document.querySelectorAll('nav button').forEach((b) => b.classList.toggle('active', b === t));
     document.querySelectorAll('.tab').forEach((s) => s.classList.toggle('active', s.id === 'tab-' + t.dataset.tab));
     if (t.dataset.tab === 'perf') loadPerf().catch((er) => ($('#perf-body').textContent = er.message));
+    if (t.dataset.tab === 'paper') loadPaper().catch((er) => ($('#paper-body').textContent = er.message));
+    if (t.dataset.tab === 'data') loadHealth().catch((er) => ($('#health-body').textContent = er.message));
   }
   const p = e.target.closest('[data-player]');
   if (p) { e.preventDefault(); loadPlayer(p.dataset.player).catch((er) => ($('#player-body').textContent = er.message)); }

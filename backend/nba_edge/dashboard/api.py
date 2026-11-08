@@ -134,6 +134,25 @@ def player(engine: Engine, athlete_id: str, run_id: int | None = None) -> dict:
             "hit_rate_note": "Recent hit rates are shown for description only, with sample sizes; they are NOT used as probabilities."}
 
 
+def paper(engine: Engine) -> dict:
+    """REAL track only: the immutable paper ledger + the all-quotes calibration track."""
+    from ..model.paper import calibration_track, paper_report
+    return {"paper": paper_report(engine), "all_quotes": calibration_track(engine)}
+
+
+def simulated(engine: Engine) -> dict:
+    """SIMULATED track only (walk-forward backtest with synthetic lines). Never merged with paper results."""
+    bt = latest_backtest(engine)
+    return {"label": "SIMULATED LINES — projection calibration on historical box scores. NOT betting results, NOT paper results.",
+            "backtest": bt}
+
+
+def health(engine: Engine, settings=None) -> dict:
+    from ..config import Settings
+    from ..pipeline.ops import health_report
+    return health_report(engine, settings or Settings())
+
+
 def performance(engine: Engine) -> dict:
     bt = latest_backtest(engine)
     return {"backtest": {"label": "SIMULATED LINES — projection calibration on historical box scores, NOT betting results", **(bt or {})} if bt else None,

@@ -15,7 +15,8 @@
   <button data-tab="props" class="active">Top props</button>
   <button data-tab="proj">Projections</button>
   <button data-tab="player">Player research</button>
-  <button data-tab="perf">Model performance</button>
+  <button data-tab="paper">Paper trading <span class="label-real">REAL</span></button>
+  <button data-tab="perf">Simulated validation <span class="label-sim">SIM</span></button>
   <button data-tab="data">Data freshness</button>
 </nav>
 <main>
@@ -37,6 +38,7 @@
     <div class="controls"><label>Player <input id="f-player" list="player-list" placeholder="type a name"></label><datalist id="player-list"></datalist></div>
     <div id="player-body"><p class="hint">Pick a player from the Projections tab or type a name.</p></div>
   </section>
+  <section id="tab-paper" class="tab"><div id="paper-body">loading…</div></section>
   <section id="tab-perf" class="tab"><div id="perf-body">loading…</div></section>
   <section id="tab-data" class="tab"><div id="data-body">loading…</div></section>
 </main>

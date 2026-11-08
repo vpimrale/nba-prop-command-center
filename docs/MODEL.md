@@ -1,12 +1,13 @@
 # NBA prop research & probability engine — model v1.2
 
-_Last updated 2026-11-07. Model id `v1.2-shrunk-nb-copula-empmin`._
+_Last updated 2026-11-08. Model id `v1.2-shrunk-nb-copula-empmin`._
 
 **Status:** runs end to end on live data (real FanDuel/Fanatics prices via PropLine, real
 ESPN box scores). It has been validated on historical outcomes with **simulated lines**.
-It has **not** yet been validated against real lines and outcomes (that record starts
-accumulating with tonight's games). Every output is **paper only**, and **NO BET** is the
-default decision.
+The first real lines + real outcomes (one night, 7 games) are in §4b: on them the **market's
+no-vig price was more accurate than the model**. Every output is **paper only**, **NO BET** is
+the default decision, and the paper-trading ledger (docs/OPERATIONS.md §6) holds 0
+recommendations so far because no quote has passed every gate.
 
 ## 1. Data (all free)
 | Source | Use | Notes |
@@ -123,7 +124,37 @@ does. Two explanations fit, the model running low or books shading overs (a comm
 practice), and real outcomes are needed to tell them apart. That run produced 0
 PAPER_CANDIDATEs, so **NO BET**.
 
+## 4b. First real outcomes (2026-11-07 slate, graded 2026-11-08) — REAL lines, one night
+
+Each FanDuel/Fanatics quote's last pre-tip evaluation, graded against ESPN final box scores.
+7 games, 88 players, 10,858 decided quotes. The quotes are heavily correlated (alternate
+ladders of the same players; both sides of each main line), so the effective sample is
+far smaller than the row count. **One night is not evidence of anything either way.**
+
+| Slice | n decided | Model Brier | Market no-vig Brier | Model mean prob | Observed |
+|---|---|---|---|---|---|
+| All quotes | 10,858 | 0.1871 | **0.1731** | 0.410 avg | 0.410 base rate |
+| Main lines, two-sided (both sides) | 2,478 | 0.2587 | **0.2463** | — | — |
+| Main-line overs | 1,239 | | | 0.463 (market 0.492) | **0.449** |
+| Alternates / milestones | 8,380 | 0.1659 | **0.1514** | 0.405 | 0.384 |
+| WATCH decisions | 1,308 | 0.2514 | **0.2403** | 0.545 | **0.440** |
+
+Read-out:
+- The market beat the model on Brier in almost every market and both books. The model was
+  only level or slightly better on 3PM, RA and STL main lines, on small counts.
+- Overs hit less often than the market implied (44.9% vs 49.2%). The model's under-tilt
+  (§4) pointed the right way that night, but its probabilities were noisier than the
+  market's, so its Brier was worse.
+- WATCH quotes (positive point-estimate EV, failed a gate) won 44.0% against the model's
+  54.5%. That is below even the market's 47.6%. The gates that kept them from becoming
+  candidates look justified, and a positive point-estimate EV is not an edge.
+- CLV is **unavailable** for this slate. No odds were captured after the last model run
+  (no scheduler was running overnight), so the "close" would equal the evaluated price. It
+  is recorded as missing, not as 0.
+
 ## 5. Known weaknesses (what to watch)
+- **Less accurate than the market on the first real slate** (§4b): until many slates say
+  otherwise, assume the no-vig price is the better probability.
 - **Early-season over-projection:** points bias +0.78 and PRA +1.05 in the 2026-27 sample.
   Last-season priors carry too much weight in the first weeks.
 - **Combos lag the singles:** PRA, PR and PA beat a constant clearly out of sample, but only
@@ -149,8 +180,10 @@ PAPER_CANDIDATEs, so **NO BET**.
 nba-edge ingest-espn --start 2025-10-21 --end 2026-06-20   # one-time history backfill (~10 min)
 nba-edge ingest-espn --days 2 && nba-edge ingest-injuries   # daily (the scheduler does this)
 nba-edge snapshot && nba-edge project                       # odds + slate model
-nba-edge grade                                              # after games finish
+nba-edge grade                                              # after games finish (the scheduler does this)
+nba-edge paper --all-quotes                                 # REAL paper ledger + all-quotes calibration
 nba-edge backtest --start 2026-10-21 --end 2026-11-06 --every 1
 nba-edge serve                                              # http://127.0.0.1:8765
-nba-edge run-scheduler --interval 300                       # everything, automatically
+nba-edge run-scheduler                                      # everything, automatically (docs/OPERATIONS.md)
+nba-edge health                                             # exit 0 ok / 1 warn / 2 critical
 ```

@@ -21,7 +21,7 @@ STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8"}
 
 
-def make_handler(engine: Engine):
+def make_handler(engine: Engine, settings=None):
     class Handler(BaseHTTPRequestHandler):
         server_version = "nba-edge-dashboard"
 
@@ -52,6 +52,12 @@ def make_handler(engine: Engine):
                     return self._json(api.projection_table(engine))
                 if u.path.startswith("/api/player/"):
                     return self._json(api.player(engine, u.path.rsplit("/", 1)[-1]))
+                if u.path == "/api/paper":
+                    return self._json(api.paper(engine))
+                if u.path == "/api/simulated":
+                    return self._json(api.simulated(engine))
+                if u.path == "/api/health":
+                    return self._json(api.health(engine, settings))
                 if u.path == "/api/performance":
                     return self._json(api.performance(engine))
                 if u.path == "/api/runs":
@@ -72,5 +78,5 @@ def make_handler(engine: Engine):
     return Handler
 
 
-def serve(engine: Engine, host: str = "127.0.0.1", port: int = 8765) -> ThreadingHTTPServer:
-    return ThreadingHTTPServer((host, port), make_handler(engine))
+def serve(engine: Engine, host: str = "127.0.0.1", port: int = 8765, settings=None) -> ThreadingHTTPServer:
+    return ThreadingHTTPServer((host, port), make_handler(engine, settings))

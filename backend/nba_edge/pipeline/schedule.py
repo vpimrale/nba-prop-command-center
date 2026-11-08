@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import and_, insert, select
+from sqlalchemy import and_, func, insert, select
 from sqlalchemy.engine import Engine
 
 from ..config import Settings
@@ -106,11 +106,16 @@ def run_due(engine: Engine, settings: Settings, *, now: datetime | None = None, 
     t0 = _time.monotonic()
     day = now.astimezone(ET).date()
     summary: dict = {"now": now.isoformat(), "day_et": day.isoformat(), "runs": [], "missed": []}
+    from .ops import record_gap_if_any
+    gap = record_gap_if_any(engine, now, settings.tick_expected_min)
+    if gap:
+        summary["gap"] = gap
     with engine.begin() as conn:
         tick_id = conn.execute(insert(job_runs).values(job_name="scheduler_tick", started_at=now, status="running")).inserted_primary_key[0]
     client, recorder = open_provider(settings, engine, transport=transport, sleep=sleep, clock=(lambda: now) if simulated else utcnow)
     summary["provider"] = client.name
     try:
+      try:
         if not client.has_credentials():
             summary["status"] = "blocked_no_key"
             summary["detail"] = f"No API key configured for {client.name} — no provider calls made."
@@ -152,14 +157,20 @@ def run_due(engine: Engine, settings: Settings, *, now: datetime | None = None, 
                                         "status": result["status"], "rows_inserted": result["rows_inserted"],
                                         "credits_reported": result["credits_reported"]})
             summary["status"] = "ok"
-        if settings.research_jobs:
-            summary["research"] = run_research_jobs(engine, settings, now=now, snapshot_ran=bool(summary["runs"]))
+      except Exception as e:  # noqa: BLE001 — odds capture failing must not stop results/injuries/grading
+        log.exception("odds capture failed in scheduler tick")
+        summary["status"] = "failed"
+        summary["error"] = f"{type(e).__name__}: {e}"[:300]
+      if settings.research_jobs:
+        summary["research"] = run_research_jobs(engine, settings, now=now, snapshot_ran=bool(summary["runs"]))
     finally:
         client.close()
+        failed_jobs = [k for k, v in (summary.get("research") or {}).items() if isinstance(v, dict) and v.get("status") == "failed"]
         with engine.begin() as conn:
             conn.execute(job_runs.update().where(job_runs.c.id == tick_id).values(
                 finished_at=now + timedelta(seconds=_time.monotonic() - t0), status=summary.get("status", "failed"),
-                detail=f"runs={len(summary['runs'])} missed={len(summary['missed'])}"))
+                detail=(f"runs={len(summary['runs'])} missed={len(summary['missed'])}" + (f" research_failed={','.join(failed_jobs)}" if failed_jobs else "")
+                        + (f" error={summary['error']}" if summary.get("error") else ""))[:1000]))
     return summary
 
 
@@ -189,6 +200,7 @@ def run_research_jobs(engine: Engine, settings: Settings, *, now: datetime, snap
     from ..research.espn import EspnClient
     from ..research.ingest import ingest_dates, ingest_injuries_espn, ingest_injuries_propline
     from ..model.grading import grade_pending
+    from ..model.paper import grade_paper
     from ..model.run import run_slate
     from .snapshots import RequestRecorder
     out: dict = {}
@@ -202,12 +214,22 @@ def run_research_jobs(engine: Engine, settings: Settings, *, now: datetime, snap
             with engine.begin() as conn:
                 conn.execute(insert(job_runs).values(job_name=name, started_at=now, finished_at=utcnow(), status="failed", detail=out[name]["detail"]))
 
+    def recorded(name, fn, summarize):
+        def run():
+            r = fn()
+            with engine.begin() as conn:
+                conn.execute(insert(job_runs).values(job_name=name, started_at=now, finished_at=utcnow(), status=r.get("status", "ok"),
+                                                     detail=summarize(r)[:1000]))
+            return r
+        guarded(name, run)
+
     espn = EspnClient(on_request=RequestRecorder(engine, "espn"))
     try:
         new_finals = False
         if _due(engine, "ingest_espn", now, settings.espn_ingest_every_min):
             today = now.astimezone(ET).date()
-            guarded("ingest_espn", lambda: ingest_dates(engine, espn, today - timedelta(days=1), today, now=now))
+            start = catch_up_start(engine, today)
+            guarded("ingest_espn", lambda: ingest_dates(engine, espn, start, today, now=now))
             new_finals = bool((out.get("ingest_espn") or {}).get("boxes"))
         if _due(engine, "ingest_injuries:espn", now, settings.injuries_every_min):
             guarded("ingest_injuries:espn", lambda: ingest_injuries_espn(engine, espn, now=now))
@@ -218,8 +240,11 @@ def run_research_jobs(engine: Engine, settings: Settings, *, now: datetime, snap
                     guarded("ingest_injuries:propline", lambda: ingest_injuries_propline(engine, pc, now=now))
                 finally:
                     pc.close()
-        if new_finals:
-            guarded("grade", lambda: grade_pending(engine))
+        if new_finals or _due(engine, "grade", now, settings.grade_every_min):
+            def grade():
+                g = {"status": "ok", "paper": grade_paper(engine, now=now), "all_quotes": grade_pending(engine)}
+                return g
+            recorded("grade", grade, lambda g: f"paper graded={g['paper']['graded']} all-quotes graded={g['all_quotes']['graded']}")
         if snapshot_ran or _due(engine, "model_run", now, settings.model_every_min):
             if snapshot_ran and not _due(engine, "model_run", now, settings.model_min_gap_min):
                 out["model_run"] = {"status": "skipped", "detail": "ran recently"}
@@ -232,6 +257,21 @@ def run_research_jobs(engine: Engine, settings: Settings, *, now: datetime, snap
                                                              detail=f"run {r['id']}: {r['status']} players={r.get('n_players')} quotes={r.get('n_evaluations')} candidates={r.get('n_candidates')}"))
                     return {"status": r["status"], "run_id": r["id"], "candidates": r.get("n_candidates")}
                 guarded("model_run", model)
+        from .ops import maintenance_due, run_maintenance
+        if maintenance_due(engine, settings, now):
+            guarded("maintenance", lambda: run_maintenance(engine, settings, now))
     finally:
         espn.close()
     return out
+
+
+def catch_up_start(engine: Engine, today: date, max_days: int = 7) -> date:
+    """Normally yesterday..today. After downtime, reach back to the day before the last
+    successful ingest (at most `max_days`), so finals missed while the process was down
+    are ingested and graded on the first tick after a restart."""
+    with engine.connect() as conn:
+        last = conn.execute(select(func.max(job_runs.c.started_at)).where(and_(job_runs.c.job_name == "ingest_espn",
+                                                                               job_runs.c.status.in_(["ok", "partial"])))).scalar()
+    if last is None:
+        return today - timedelta(days=1)
+    return max(today - timedelta(days=max_days), min(today - timedelta(days=1), last.astimezone(ET).date() - timedelta(days=1)))

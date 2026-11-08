@@ -102,6 +102,17 @@ class Settings:
     injuries_every_min: int = 30
     model_every_min: int = 60          # run the slate model at least this often on game days
     model_min_gap_min: int = 20        # ...and after a snapshot, but not more often than this
+    grade_every_min: int = 60          # grading also runs right after new final box scores arrive
+    # Reliability / operations
+    tick_expected_min: int = 5         # the scheduler's intended tick interval (gap detection)
+    lock_stale_min: int = 15           # another scheduler's lock is considered dead after this
+    maintenance_hour_et: int = 5       # daily prune + backup after this ET hour (off-peak)
+    prune_keep_days: int = 3            # superseded intra-day model evaluations (~10k rows/run) are dropped after this
+    backup_dir: str = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "backups")
+    backup_keep: int = 4               # gzip copies; late in a season each is ~1-2 GB (see docs/OPERATIONS.md)
+    # Optional dead-man's-switch URL (e.g. a free healthchecks.io check). Only a bare GET is
+    # sent — no data. Treated as a secret: the URL itself is the credential.
+    healthcheck_ping_url: Secret = field(default_factory=lambda: Secret(None))
 
     @classmethod
     def from_env(cls, env: dict | None = None) -> "Settings":
@@ -136,6 +147,14 @@ class Settings:
             injuries_every_min=_int(env, "INJURIES_EVERY_MIN", base.injuries_every_min),
             model_every_min=_int(env, "MODEL_EVERY_MIN", base.model_every_min),
             model_min_gap_min=_int(env, "MODEL_MIN_GAP_MIN", base.model_min_gap_min),
+            grade_every_min=_int(env, "GRADE_EVERY_MIN", base.grade_every_min),
+            tick_expected_min=_int(env, "SCHEDULER_TICK_MIN", base.tick_expected_min),
+            lock_stale_min=_int(env, "SCHEDULER_LOCK_STALE_MIN", base.lock_stale_min),
+            maintenance_hour_et=_int(env, "MAINTENANCE_HOUR_ET", base.maintenance_hour_et),
+            prune_keep_days=_int(env, "PRUNE_KEEP_DAYS", base.prune_keep_days),
+            backup_dir=env.get("NBA_EDGE_BACKUP_DIR") or base.backup_dir,
+            backup_keep=_int(env, "NBA_EDGE_BACKUP_KEEP", base.backup_keep),
+            healthcheck_ping_url=Secret(env.get("HEALTHCHECK_PING_URL")),
         )
 
     def describe(self) -> dict:
@@ -159,4 +178,9 @@ class Settings:
             "pretip_offsets_min": list(self.pretip_offsets_min),
             "snapshot_interval_min": self.snapshot_interval_min,
             "research_jobs": self.research_jobs,
+            "tick_expected_min": self.tick_expected_min,
+            "maintenance_hour_et": self.maintenance_hour_et,
+            "backup_dir": self.backup_dir,
+            "backup_keep": self.backup_keep,
+            "healthcheck_ping_url": "set" if self.healthcheck_ping_url else "not set",
         }

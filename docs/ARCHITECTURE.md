@@ -1,6 +1,6 @@
 # NBA Prop Command Center — architecture
 
-_Last updated 2026-11-07 (Stage 0, Stage 1, free odds source). Status markers: **built+tested** = exists
+_Last updated 2026-11-08 (Stage 0, Stage 1, free odds source, model, paper-trading automation). Status markers: **built+tested** = exists
 and covered by automated tests (synthetic data); **designed** = schema/plan only;
 **not started**._
 
@@ -25,6 +25,10 @@ and covered by automated tests (synthetic data); **designed** = schema/plan only
  │                    matching (PropLine injuries as 2nd source)                        │
  │ nba_edge.model     minutes/rates/context, 10k Monte Carlo, pricing,  built+tested    │
  │                    NO-BET gates, grading, backtest, retention                        │
+ │ nba_edge.model.paper immutable paper ledger, grading at rec. price, built+tested    │
+ │                    CLV, Brier/ROI/calibration report by segment                      │
+ │ nba_edge.pipeline.ops lock/heartbeat, gap detection, health,       built+tested    │
+ │                    daily prune + backup + ledger hash check                          │
  │ nba_edge.dashboard local read-only research dashboard (127.0.0.1)    built+tested    │
  └──────────────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -93,11 +97,22 @@ fetched at most once per tick. Estimated cost with the default 22 markets is abo
 * The tracker PWA is public static code and must never receive the provider key. The
   Stage 5 dashboard reads a backend API, never the provider directly.
 
-## 5. Deployment (proposal — not done, needs approval)
-One always-on process (`run-scheduler`) plus Postgres. Options: a small VPS or
-Fly.io/Railway machine (about $5–10/month, unverified) with Neon/Supabase free-tier
-Postgres. Reliable timing matters for closing snapshots, which is why GitHub Actions
-cron (which can start many minutes late) is not recommended.
+## 5. Deployment (not done — see docs/OPERATIONS.md)
+One always-on process (`run-scheduler`) with SQLite on local disk. The measured data volume
+is ~6–7 GB per season, which rules out the free managed Postgres tiers (0.5 GB) as the
+primary store. The recommendation is a computer you already own that stays on, using the
+systemd, Windows Task Scheduler, launchd or Docker templates in `backend/deploy/`. An Oracle
+Always Free VM is the fallback; it needs a card at sign-up and your decision. GitHub Actions
+cron and sleeping PaaS tiers are rejected because they miss closing slots. Postgres remains
+supported (all tests run on both backends, and the immutability triggers exist for both).
+
+## 5b. Paper-trading tables (schema v4)
+| Table | Mutability | Purpose |
+|---|---|---|
+| `paper_recommendations` | **insert-only** (DB trigger) | PAPER_CANDIDATE frozen at first qualification: exact line/price, snapshot id, projection, probabilities, EV, gates, model version, timestamp, SHA-256 |
+| `paper_outcomes` | **insert-only** (DB trigger) | actual stat, result, profit at the recommendation price, closing price, CLV |
+| `prop_grades` | **insert-only** (DB trigger) | all-quotes calibration track (each quote's last pre-tip evaluation) |
+| `scheduler_lock` | heartbeat row | single scheduler per database |
 
 ## 6. Roadmap
 | Stage | Scope | State |
@@ -109,6 +124,6 @@ cron (which can start many minutes late) is not recommended.
 | 3 | minutes + rate projections with shrinkage; 10k Monte Carlo; walk-forward validation | done — v1.2, see docs/MODEL.md |
 | 4 | no-vig, fair odds, EV, uncertainty-aware gates, NO BET default | done |
 | 5 | dashboard: top props, projections, player research, model performance, data freshness | done (local, read-only; separate from the tracker PWA) |
-| 6 | paper trading, live calibration, CLV (30-day period) | infrastructure done; record starts accumulating 2026-11-07 |
+| 6 | paper trading, live calibration, CLV (30-day period) | done: immutable ledger, automatic grading, health/gap/missed-run tracking; first real slate graded 2026-11-08 (market more accurate than model); 0 paper recommendations so far; not yet deployed (needs your choice of host) |
 | 7 | correlated parlays (joint simulation), fractional-Kelly sizing with caps | not started |
 | 8 | historical backtest — only if a historical-odds backfill is approved | not started |
