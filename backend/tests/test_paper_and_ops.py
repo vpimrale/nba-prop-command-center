@@ -197,7 +197,7 @@ def test_scheduler_lock_single_instance_and_stale_takeover(engine):
     assert acquire_lock(engine, "host:2", NOW + timedelta(minutes=26), 15)[0], "a dead holder's lock is taken over"
     assert not heartbeat(engine, "host:1", NOW + timedelta(minutes=27)), "the old holder learns it lost the lock"
     with engine.connect() as conn:
-        assert "took over stale lock" in conn.execute(select(job_runs.c.detail).where(job_runs.c.job_name == "scheduler_lock")).scalar()
+        assert "heartbeat stale" in conn.execute(select(job_runs.c.detail).where(job_runs.c.job_name == "scheduler_lock")).scalar()
     release_lock(engine, "host:2")
     with engine.connect() as conn:
         assert conn.execute(select(func.count()).select_from(scheduler_lock)).scalar() == 0
@@ -330,3 +330,67 @@ def test_all_quotes_grading_uses_only_each_quotes_last_pretip_evaluation(engine,
     with engine.connect() as conn:
         graded_runs = {r[0] for r in conn.execute(select(prop_evaluations.c.run_id).join(prop_grades, prop_grades.c.evaluation_id == prop_evaluations.c.id))}
     assert len(graded_runs) == 1, "superseded evaluations stay ungraded (prunable)"
+
+
+def test_lock_taken_over_at_once_from_a_dead_process_on_this_host(engine):
+    """After a crash / kill -9 / power cut the lock row survives with a fresh-looking heartbeat.
+    A restarted scheduler on the same machine must not be refused for 15 minutes (systemd
+    would hit its restart cap and give up)."""
+    import socket
+    from nba_edge.pipeline.ops import acquire_lock, holder_is_dead_local
+    dead = subprocess.Popen([sys.executable, "-c", "pass"])
+    dead.wait()
+    host = socket.gethostname()
+    assert holder_is_dead_local(f"{host}:{dead.pid}")
+    assert not holder_is_dead_local(f"{host}:{os.getppid()}"), "a live local process keeps its lock"
+    assert not holder_is_dead_local(f"{host}-other:{dead.pid}"), "other hosts are judged by heartbeat only"
+    with engine.begin() as conn:
+        conn.execute(insert(scheduler_lock).values(name="scheduler", holder=f"{host}:{dead.pid}", heartbeat_at=NOW))
+    ok, row = acquire_lock(engine, f"{host}:{os.getpid()}", NOW + timedelta(minutes=1), 15)
+    assert ok and row["holder"] == f"{host}:{dead.pid}"
+    with engine.connect() as conn:
+        detail = conn.execute(select(job_runs.c.detail).where(job_runs.c.job_name == "scheduler_lock")).scalar()
+    assert "process is gone" in detail
+
+
+def test_scheduler_loop_waits_for_the_lock_instead_of_exiting(tmp_path):
+    """Service mode: a second loop waits as a standby (no restart loop), takes over when the
+    lock is released, ticks, and stops cleanly on SIGTERM. It also writes its own log file."""
+    import signal
+    import time
+    url = f"sqlite:///{tmp_path / 'wait.sqlite3'}"
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("PROPLINE", "ODDS_", "HEALTHCHECK"))}
+    env.update(NBA_EDGE_DATABASE_URL=url, RESEARCH_JOBS="0", NBA_EDGE_BACKUP_DIR=str(tmp_path / "bk"))
+    assert _cli(["init-db"], env).returncode == 0
+    from nba_edge.db.engine import make_engine
+    eng = make_engine(url)
+    with eng.begin() as conn:
+        conn.execute(insert(scheduler_lock).values(name="scheduler", holder="otherhost:1", heartbeat_at=datetime.now(timezone.utc)))
+    log_file = tmp_path / "logs" / "scheduler.log"
+    p = subprocess.Popen([sys.executable, "-m", "nba_edge", "--log-file", str(log_file), "run-scheduler", "--interval", "1"],
+                         cwd=BACKEND, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        time.sleep(3)
+        assert p.poll() is None, "it must wait, not exit"
+        with eng.connect() as conn:
+            assert conn.execute(select(func.count()).select_from(job_runs).where(job_runs.c.job_name == "scheduler_tick")).scalar() == 0
+        with eng.begin() as conn:
+            conn.execute(delete(scheduler_lock))
+        deadline = time.time() + 60
+        while time.time() < deadline:
+            with eng.connect() as conn:
+                if conn.execute(select(func.count()).select_from(job_runs).where(job_runs.c.job_name == "scheduler_tick")).scalar():
+                    break
+            time.sleep(0.5)
+        else:
+            pytest.fail("never ticked after the lock was released")
+        p.send_signal(signal.SIGTERM)
+        assert p.wait(timeout=60) == 0
+    finally:
+        if p.poll() is None:
+            p.kill()
+    with eng.connect() as conn:
+        assert conn.execute(select(func.count()).select_from(scheduler_lock)).scalar() == 0, "lock released on SIGTERM"
+    text = log_file.read_text()
+    assert "waiting for the scheduler lock" in text and "scheduler lock acquired" in text
+    eng.dispose()

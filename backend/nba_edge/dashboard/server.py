@@ -58,8 +58,6 @@ def make_handler(engine: Engine, settings=None):
                     return self._json(api.simulated(engine))
                 if u.path == "/api/health":
                     return self._json(api.health(engine, settings))
-                if u.path == "/api/performance":
-                    return self._json(api.performance(engine))
                 if u.path == "/api/runs":
                     return self._json(api.recent_runs(engine))
                 path = "index.html" if u.path in ("/", "") else u.path.lstrip("/")

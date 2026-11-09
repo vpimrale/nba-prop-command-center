@@ -1,6 +1,6 @@
 # Operations: free hosting, automation and the paper-trading record
 
-_Last updated 2026-11-08. Nothing described here has been deployed. No hosting, subscription or
+_Last updated 2026-11-09. Nothing described here has been deployed. No hosting, subscription or
 credits have been purchased. Every template in `backend/deploy/` is inert until you install it._
 
 ## 1. What has to run, and how often
@@ -26,9 +26,17 @@ local guard is set at 800.
 ## 2. Restart safety and visibility
 
 - **Single instance.** A heartbeat lock row in the database (`scheduler_lock`) stops a second
-  scheduler from running on the same database, which would double-spend requests. A crashed
-  holder's lock is taken over after 15 minutes, and the takeover is logged. `run-due` (cron
-  mode) refuses with exit 3 while a loop holds the lock.
+  scheduler from running on the same database, which would double-spend requests.
+  - **Crash, `kill -9` or power cut on the same machine:** the restarted process sees that the
+    old holder's process no longer exists and takes the lock at once. The takeover is logged.
+  - **Holder on another machine:** its lock is taken over once its heartbeat is 15 minutes old.
+  - **A second `run-scheduler` loop** waits as a standby, logging that it is waiting, instead
+    of exiting. Exiting would make systemd, launchd or Task Scheduler restart it in a loop
+    until they give up.
+  - **`run-due` (cron mode) and `run-scheduler --once`** refuse with exit 3 while a loop
+    holds the lock.
+- **SQLite concurrency.** WAL mode with a 30-second busy timeout, so a manual command or the
+  backup running during a scheduler write waits instead of failing with "database is locked".
 - **Catch-up after downtime.** On the first tick after a restart, every job whose last success
   is too old runs. ESPN ingestion reaches back to the day before its last good run, so finals
   missed while the process was down are ingested and graded.
@@ -93,29 +101,103 @@ summary; GitHub community discussions #210625 and #211839 on delayed and dropped
 flaviocopes.com and saaspricepulse.com free-tier surveys; dev.to and automationatlas.io
 Neon/Supabase comparisons. Free tiers change often; re-check before choosing.
 
-## 5. Recommended setup
+## 5. Recommended setup: run it on your own computer
 
-1. **Run it on a computer you already own that stays on**, using SQLite on its local disk.
-   - It is free.
-   - It keeps PropLine data private, as the terms require.
-   - It has no reclaim or sleep policies.
-   - It has enough disk for several seasons.
-2. **Install the matching template**:
-   - Linux: `backend/deploy/systemd/nba-edge-scheduler.service` (user service, `Restart=always`, plus `loginctl enable-linger`).
-   - Windows: `backend/deploy/windows/register-task.ps1` (starts at logon, restarts on failure).
-   - macOS: `backend/deploy/macos/com.nbaedge.scheduler.plist`.
-   - Docker: `backend/deploy/docker-compose.yml`. The Docker files have not been built here
-     (no Docker in this environment).
-3. **Put secrets in `backend/.env`** (git-ignored, `chmod 600`): `PROPLINE_API_KEY` and,
-   optionally, `HEALTHCHECK_PING_URL`.
-4. **Disable sleep while plugged in.**
-5. **Copy `backend/data/backups/` off the machine** now and then, e.g. to a USB drive or a
-   private cloud folder. Backups contain PropLine data, so keep them private.
-6. **Check `nba-edge health`** or the dashboard's Data freshness tab daily for the first week.
+Use a computer you already own that can stay on, with SQLite on its local disk.
+- It is free and has no reclaim or sleep policies.
+- It keeps PropLine data private, as the terms require.
+- It has enough disk for several seasons (§3).
 
-**Fallback if no machine can stay on:** an Oracle Always Free VM with the systemd template
-and SQLite on its block volume. It requires a card at sign-up and has reclaim risk, so it
-needs your explicit decision. I have not created an account or VM.
+**Fallback if no machine can stay on:** an Oracle Always Free VM with the Linux steps below
+and SQLite on its block volume. It requires a card at sign-up and has reclaim risk, so it needs
+your explicit decision. No account or VM has been created.
+
+### 5.1 One-time install (all systems)
+
+Requires Python 3.11 or newer (tested on 3.13) and git.
+
+```bash
+git clone -b claude/festive-turing-darhx2 https://github.com/vpimrale/nba-prop-command-center.git   # drop -b once merged
+cd nba-prop-command-center/backend
+python3 -m venv .venv                       # Windows: py -3 -m venv .venv
+.venv/bin/pip install -r requirements.lock  # Windows: .venv\Scripts\pip install -r requirements.lock
+cp .env.example .env                        # Windows: copy .env.example .env
+```
+
+Edit `backend/.env`:
+- Set `PROPLINE_API_KEY=` to your free key from prop-line.com.
+- Optionally set `HEALTHCHECK_PING_URL=`.
+- Leave `NBA_EDGE_DATABASE_URL` empty to use `backend/data/nba_edge.sqlite3`.
+
+On Linux or macOS, also run `chmod 600 .env`. The file is git-ignored; never commit it.
+
+Then create the database and check one tick by hand:
+
+```bash
+.venv/bin/python -m nba_edge init-db
+set -a; . ./.env; set +a                    # Windows: the wrapper script does this for the service
+.venv/bin/python -m nba_edge run-scheduler --once
+.venv/bin/python -m nba_edge health         # exit 0 ok / 1 warn / 2 critical
+```
+
+On the very first tick, health shows `critical` or `warn` until each job has run once. That
+is expected.
+
+### 5.2 Keep it running
+
+Pick the section for your system. Each template restarts the scheduler after a crash and starts
+it again after a reboot. A restart after a crash is never refused by the lock (§2).
+
+**Linux** (desktop, laptop, Raspberry Pi, or the Oracle VM):
+1. Copy the service file:
+   ```bash
+   mkdir -p ~/.config/systemd/user
+   cp deploy/systemd/nba-edge-scheduler.service ~/.config/systemd/user/
+   ```
+2. If the repo is not at `~/nba-prop-command-center`, edit the paths in that file.
+3. Enable and start it, and keep it running when you are logged out:
+   ```bash
+   systemctl --user daemon-reload
+   systemctl --user enable --now nba-edge-scheduler
+   loginctl enable-linger "$USER"
+   ```
+4. Watch the logs with `journalctl --user -u nba-edge-scheduler -f`.
+
+**Windows 10/11:**
+1. Run once in PowerShell:
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File backend\deploy\windows\register-task.ps1
+   ```
+   This registers a per-user task that starts at logon and restarts on failure. It runs
+   only while you are signed in, so after a reboot it starts when you sign in.
+2. Set Settings › System › Power › Sleep to **Never** while plugged in.
+3. Logs are in `backend\data\logs\scheduler.log` (rotated at 10 MB).
+4. To remove the task: `Unregister-ScheduledTask -TaskName "NBA Edge Scheduler"`.
+
+**macOS:**
+1. Create the log folder: `mkdir -p backend/data/logs`.
+2. In `deploy/macos/com.nbaedge.scheduler.plist`, replace `/Users/YOU` with your home folder.
+3. Install and load it:
+   ```bash
+   cp deploy/macos/com.nbaedge.scheduler.plist ~/Library/LaunchAgents/
+   launchctl load ~/Library/LaunchAgents/com.nbaedge.scheduler.plist
+   ```
+4. Turn on System Settings › Battery › Options › *Prevent automatic sleeping when the display
+   is off* (while on power).
+
+**Docker** (any OS with Docker):
+- Start it with `docker compose -f deploy/docker-compose.yml up -d --build`.
+- The Docker files have not been built here, because Docker is not available in this
+  environment.
+
+### 5.3 Daily routine (first week), then weekly
+
+- `nba-edge health`, or `nba-edge serve` and open http://127.0.0.1:8765/ (Data freshness tab).
+  The dashboard binds to localhost only; do not expose it, since PropLine data may not be
+  redistributed.
+- `nba-edge paper` shows the REAL paper-trading report and ledger integrity.
+- Copy `backend/data/backups/` off the machine now and then, e.g. to a USB drive or a private
+  cloud folder. Backups contain PropLine data, so keep them private.
 
 ## 6. The paper-trading record (what "evidence" means here)
 

@@ -113,10 +113,9 @@ def cmd_run_scheduler(settings, args) -> int:
     import signal
     import threading
     from .pipeline.ops import heartbeat, holder_id, ping, release_lock
+    from .pipeline.ops import acquire_lock
     engine = _engine(settings)
     holder = holder_id()
-    if not _lock_or_explain(engine, settings, holder, force=args.force):
-        return 3
     interval = args.interval or settings.tick_expected_min * 60
     stop = threading.Event()
 
@@ -128,6 +127,19 @@ def cmd_run_scheduler(settings, args) -> int:
             signal.signal(sig, _stop)
         except ValueError:  # not in main thread (tests)
             pass
+    if not _lock_or_explain(engine, settings, holder, force=args.force):
+        if args.once:
+            return 3
+        # Service mode: wait as a standby instead of exiting. Exiting would make systemd /
+        # launchd / Task Scheduler restart us in a loop until they give up; waiting takes the
+        # lock as soon as the holder releases it, dies, or its heartbeat goes stale.
+        log.warning("waiting for the scheduler lock (checking every %ss)", interval)
+        while True:
+            if stop.wait(interval):
+                return 3
+            if acquire_lock(engine, holder, datetime.now(timezone.utc), settings.lock_stale_min)[0]:
+                log.info("scheduler lock acquired")
+                break
     log.info("scheduler %s: tick every %ss", holder, interval)
     try:
         while not stop.is_set():
@@ -315,6 +327,7 @@ def cmd_serve(settings, args) -> int:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="nba-edge", description="NBA Quant Edge backend: odds snapshots (default source: PropLine free tier)")
     p.add_argument("--log-level", default="INFO")
+    p.add_argument("--log-file", default=None, help="also append logs to this file (rotated at 10 MB, 5 kept)")
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("config", help="print effective configuration (no secrets)").set_defaults(fn=cmd_config)
     sub.add_parser("init-db", help="create/upgrade the database schema").set_defaults(fn=cmd_init_db)
@@ -327,7 +340,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("run-due", help="one scheduler tick (cron/timer mode): odds slots + research jobs that are due").set_defaults(fn=cmd_run_due)
     r = sub.add_parser("run-scheduler", help="long-running loop: one tick every --interval seconds (single instance per database)")
     r.add_argument("--interval", type=int, default=0, help="seconds (default: SCHEDULER_TICK_MIN x 60)")
-    r.add_argument("--once", action="store_true")
+    r.add_argument("--once", action="store_true", help="run one tick and exit (exits 3 if another scheduler holds the lock)")
     r.add_argument("--force", action="store_true", help="take the lock even if another holder's heartbeat is fresh")
     r.set_defaults(fn=cmd_run_scheduler)
     sub.add_parser("health", help="freshness/failure/gap checks; exit 0 ok, 1 warn, 2 critical").set_defaults(fn=cmd_health)
@@ -379,7 +392,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    configure_logging(args.log_level)
+    configure_logging(args.log_level, log_file=args.log_file)
     settings = Settings.from_env()
     register_secret(settings.odds_api_key.reveal())
     register_secret(settings.propline_api_key.reveal())

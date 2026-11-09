@@ -37,16 +37,25 @@ class RedactingFilter(logging.Filter):
         return True
 
 
-def configure_logging(level: str = "INFO") -> None:
+def configure_logging(level: str = "INFO", log_file: str | None = None) -> None:
     for noisy in ("httpx", "httpcore"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
     root = logging.getLogger()
     root.setLevel(level)
+    fmt = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
     if not any(getattr(h, "_nba_edge", False) for h in root.handlers):
         handler = logging.StreamHandler()
         handler._nba_edge = True  # type: ignore[attr-defined]
-        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+        handler.setFormatter(fmt)
         root.addHandler(handler)
+    if log_file and not any(getattr(h, "_nba_edge_file", False) for h in root.handlers):
+        import os
+        from logging.handlers import RotatingFileHandler
+        os.makedirs(os.path.dirname(os.path.abspath(log_file)), exist_ok=True)
+        fh = RotatingFileHandler(log_file, maxBytes=10_000_000, backupCount=5, encoding="utf-8")
+        fh._nba_edge_file = True  # type: ignore[attr-defined]
+        fh.setFormatter(fmt)
+        root.addHandler(fh)
     for h in root.handlers:
         if not any(isinstance(f, RedactingFilter) for f in h.filters):
             h.addFilter(RedactingFilter())

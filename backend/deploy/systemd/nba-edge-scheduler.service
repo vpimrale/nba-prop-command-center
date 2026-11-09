@@ -14,7 +14,9 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=%h/nba-prop-command-center/backend
 # Secrets live in this git-ignored file (chmod 600): PROPLINE_API_KEY=..., optional HEALTHCHECK_PING_URL=...
-EnvironmentFile=%h/nba-prop-command-center/backend/.env
+# The leading "-" lets it start without the file (odds capture then records blocked_no_key;
+# injuries, results, the model and grading still run).
+EnvironmentFile=-%h/nba-prop-command-center/backend/.env
 ExecStart=%h/nba-prop-command-center/backend/.venv/bin/python -m nba_edge run-scheduler
 # SIGTERM -> the loop finishes its current tick and releases the DB lock.
 KillSignal=SIGTERM
@@ -22,6 +24,8 @@ TimeoutStopSec=300
 Restart=always
 RestartSec=60
 # Crash-loop guard: at most 10 restarts per hour, then systemd stops trying (health/ping will alert).
+# A restart is never refused by the DB lock: a dead holder on this machine is taken over at
+# once, and a live one is waited for (the loop does not exit).
 StartLimitIntervalSec=3600
 StartLimitBurst=10
 Nice=10

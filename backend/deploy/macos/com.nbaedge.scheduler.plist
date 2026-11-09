@@ -10,7 +10,7 @@
   <key>ProgramArguments</key>
   <array>
     <string>/bin/sh</string><string>-c</string>
-    <string>cd /Users/YOU/nba-prop-command-center/backend &amp;&amp; set -a &amp;&amp; . ./.env &amp;&amp; set +a &amp;&amp; exec .venv/bin/python -m nba_edge run-scheduler</string>
+    <string>cd /Users/YOU/nba-prop-command-center/backend &amp;&amp; set -a &amp;&amp; { [ ! -f .env ] || . ./.env; } &amp;&amp; set +a &amp;&amp; mkdir -p data/logs &amp;&amp; exec .venv/bin/python -m nba_edge run-scheduler</string>
   </array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>

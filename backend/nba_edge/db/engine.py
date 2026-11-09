@@ -25,6 +25,9 @@ def make_engine(url: str) -> Engine:
             cur = dbapi_conn.cursor()
             cur.execute("PRAGMA foreign_keys=ON")
             cur.execute("PRAGMA journal_mode=WAL")
+            # Wait up to 30 s for another writer (scheduler vs. a manual command or the backup)
+            # instead of failing with "database is locked" after the 5 s default.
+            cur.execute("PRAGMA busy_timeout=30000")
             cur.close()
     return engine
 

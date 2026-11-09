@@ -52,7 +52,7 @@ stored in the database (requests are recorded by path only), and never printed.
 | `refresh-events` | yes (1 request on PropLine) | upcoming NBA events (next 36h) |
 | `snapshot [--event ID] [--date YYYY-MM-DD]` | **yes** | capture now, for today's (ET) not-yet-started games |
 | `run-due` | **yes** | one scheduler tick (cron/timer mode); exits 3 if a scheduler loop holds the DB lock |
-| `run-scheduler [--interval S] [--force]` | **yes** | the long-running loop the service templates run (single instance per DB, SIGTERM-safe) |
+| `run-scheduler [--interval S] [--once] [--force]` | **yes** | the long-running loop the service templates run (single instance per DB; a second loop waits as standby; SIGTERM-safe). Global `--log-file PATH` appends rotated logs |
 | `health` | no | freshness/failure/gap/missed-slot/backlog/backup checks; exit 0 ok, 1 warn, 2 critical |
 | `paper [--all-quotes] [--full]` | no | REAL paper-trading report: record, ROI (95% CI), Brier vs no-vig, calibration, CLV, by market/book/probability bucket/side/main-alt; ledger hash check |
 | `maintenance` | no | the daily job now: prune, ledger hash check, SQLite backup (gzip, rotated) |
@@ -114,7 +114,7 @@ slots run first) or is recorded as `skipped_budget`.
 NBA_EDGE_TEST_PG_URL=postgresql://postgres@127.0.0.1:55432/postgres .venv/bin/python -m pytest
 ```
 
-Last run (2026-11-08): 76 passed on SQLite; 134 passed with Postgres 16 enabled
+Last run (2026-11-09): 78 passed on SQLite; 137 passed with Postgres 16 enabled
 (database-backed tests run on both). All provider data in tests is synthetic
 (`tests/fake_provider.py`, `tests/fake_propline.py`, `tests/synthetic_league.py`); two tests drive the real CLI as a
 subprocess over real HTTP against local fake servers.

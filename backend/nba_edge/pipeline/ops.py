@@ -9,7 +9,9 @@ Restart safety comes from the design rather than from in-memory state:
   * a gap between scheduler ticks longer than 3x the intended interval (machine asleep,
     process down, host reboot) is recorded as a `scheduler_gap` job row;
   * a DB-row lock with a heartbeat stops two schedulers from running against one database;
-    a lock whose heartbeat is older than `lock_stale_min` is taken over (crashed holder).
+    a lock whose heartbeat is older than `lock_stale_min` is taken over (crashed holder), and
+    a holder on this same machine whose process no longer exists is taken over at once, so a
+    service manager restarting after a crash or power cut is not refused.
 """
 from __future__ import annotations
 
@@ -40,6 +42,49 @@ def holder_id() -> str:
     return f"{socket.gethostname()}:{os.getpid()}"
 
 
+def _pid_alive(pid: int) -> bool:
+    """True if a process with this PID exists on this machine. Errs on the side of "alive"
+    (a wrong "alive" only delays takeover until the lock goes stale; a wrong "dead" could
+    start a second scheduler)."""
+    if pid <= 0:
+        return True
+    if os.name == "nt":
+        try:
+            import ctypes
+            from ctypes import wintypes
+            k32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+            k32.OpenProcess.restype = wintypes.HANDLE
+            k32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+            k32.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+            k32.CloseHandle.argtypes = (wintypes.HANDLE,)
+            h = k32.OpenProcess(0x1000, False, pid)              # PROCESS_QUERY_LIMITED_INFORMATION
+            if not h:
+                return ctypes.get_last_error() != 87                 # ERROR_INVALID_PARAMETER = no such process
+            try:
+                code = wintypes.DWORD()
+                return not k32.GetExitCodeProcess(h, ctypes.byref(code)) or code.value == 259   # STILL_ACTIVE
+            finally:
+                k32.CloseHandle(h)
+        except Exception:  # noqa: BLE001 — unknown: assume alive (falls back to the stale-heartbeat rule)
+            return True
+    try:
+        os.kill(pid, 0)                                     # signal 0: existence check only, sends nothing
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True                                         # e.g. EPERM: exists, owned by someone else
+    return True
+
+
+def holder_is_dead_local(holder: str) -> bool:
+    """A holder on THIS host whose process no longer exists (crash, kill -9, power loss then
+    reboot). Holders on other hosts can only be judged by heartbeat age."""
+    host, _, pid = holder.rpartition(":")
+    if host != socket.gethostname() or not pid.isdigit() or int(pid) == os.getpid():
+        return False
+    return not _pid_alive(int(pid))
+
+
 # ------------------------------------------------------------------ lock
 def acquire_lock(engine: Engine, holder: str, now: datetime, stale_min: int) -> tuple[bool, dict | None]:
     """Take the scheduler lock if free, ours, or stale. Returns (acquired, current_holder_row)."""
@@ -52,11 +97,14 @@ def acquire_lock(engine: Engine, holder: str, now: datetime, stale_min: int) -> 
             conn.execute(insert(scheduler_lock).values(name=LOCK_NAME, holder=holder, heartbeat_at=now))
             return True, None
         row = dict(row)
-        if row["holder"] == holder or (now - row["heartbeat_at"]) > timedelta(minutes=stale_min):
+        stale = (now - row["heartbeat_at"]) > timedelta(minutes=stale_min)
+        dead = not stale and row["holder"] != holder and holder_is_dead_local(row["holder"])
+        if row["holder"] == holder or stale or dead:
             conn.execute(update(scheduler_lock).where(scheduler_lock.c.name == LOCK_NAME).values(holder=holder, heartbeat_at=now))
             if row["holder"] != holder:
+                why = "its process is gone" if dead else "heartbeat stale"
                 conn.execute(insert(job_runs).values(job_name="scheduler_lock", started_at=now, finished_at=now, status="ok",
-                                                     detail=f"took over stale lock from {row['holder']} (heartbeat {row['heartbeat_at'].isoformat()})"))
+                                                     detail=f"took over lock from {row['holder']} ({why}; heartbeat {row['heartbeat_at'].isoformat()})"))
             return True, row
         return False, row
 

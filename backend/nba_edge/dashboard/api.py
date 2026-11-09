@@ -10,7 +10,6 @@ from sqlalchemy.engine import Engine
 from ..db.research_schema import (injury_snapshots, model_runs, nba_games, nba_player_games, projections, prop_evaluations)
 from ..db.schema import job_runs, odds_current, utcnow
 from ..model.backtest import latest_backtest
-from ..model.grading import live_performance
 from ..odds.normalize import game_date_et
 from ..queries import status_report
 from ..research.ingest import latest_injuries
@@ -151,12 +150,6 @@ def health(engine: Engine, settings=None) -> dict:
     from ..config import Settings
     from ..pipeline.ops import health_report
     return health_report(engine, settings or Settings())
-
-
-def performance(engine: Engine) -> dict:
-    bt = latest_backtest(engine)
-    return {"backtest": {"label": "SIMULATED LINES — projection calibration on historical box scores, NOT betting results", **(bt or {})} if bt else None,
-            "live": {"label": "REAL lines + REAL outcomes (paper only, no bets placed)", **live_performance(engine)}}
 
 
 def recent_runs(engine: Engine, n: int = 20) -> list[dict]:

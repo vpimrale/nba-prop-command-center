@@ -337,8 +337,13 @@ def test_dashboard_api_and_static(engine, league):
         assert len(pj["players"]) == 16 and "PRA" in pj["players"][0]
         pl = get("/api/player/AAA0")
         assert pl["logs"] and pl["projection_notes"]["model_version"] and "NOT used as probabilities" in pl["hit_rate_note"]
-        perf = get("/api/performance")
-        assert "REAL" in perf["live"]["label"]
+        sim = get("/api/simulated")
+        assert "SIMULATED" in sim["label"] and "paper" not in sim and "all_quotes" not in sim
+        real = get("/api/paper")
+        assert "PAPER" in real["paper"]["track"] and "ALL QUOTES" in real["all_quotes"]["track"] and "backtest" not in real
+        assert real["paper"]["real_money_betting"] == "disabled" and real["paper"]["profitability_claim"] == "none"
+        with pytest.raises(urllib.error.HTTPError):
+            urllib.request.urlopen(base + "/api/performance", timeout=10)   # retired: it bundled both tracks
         html = urllib.request.urlopen(base + "/", timeout=10).read().decode()
         assert "NBA Prop Research" in html
         with pytest.raises(urllib.error.HTTPError):
